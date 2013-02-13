@@ -258,6 +258,12 @@ static struct token *next_token(const char **pp)
 	return tok;
 }
 
+/* command -> string args redirections
+ * args -> e | args string
+ * redirections -> stdin_redirection stdout_redirection
+ * stdin_redirection -> '<' STRING | e
+ * stdout_redirection -> '<' STRING | e
+ */
 static int execute_pipeline(struct token *pipe_commands[],
 			    unsigned int ncommands)
 {
@@ -271,32 +277,42 @@ static int execute_tok_list(struct token *tok_list)
 	unsigned i;
 	bool cmd_boundary;
 
-	for (tok = tok_list; tok->type != TOK_EOL; tok = tok->next)
+
+	tok = tok_list;
+	if (tok->type == TOK_EOL) /* empty line */
+		return 0;
+	do {
 		if (tok->type == TOK_PIPE)
 			ncommands++;
+		tok = tok->next;
+	} while (tok->type != TOK_EOL);
+
 	struct token *commands[ncommands];
 
 	/* split the tokens into individual lists, around the '|' signs. */
-	i = 0;
+	cmd_idx = 0;
 	cmd_boundary = true;
-	tok = tok_list;
-	prev = tok_list;
-
-	while (1) {
-		if (cmd_boundary) {
-			commands[i++] = tok;
-			cmd_boundary = false;
-		}
+	for (tok = tok_list, prev = NULL;
+	     ;
+	     prev = tok, tok = tok->next)
+	{
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
-			cmd_boundary = true;
+			if (cmd_boundary) {
+				fprintf(stderr,
+					SHELL_NAME ": error: empty command in pipeline\n");
+				return -1;
+			}
 			prev->next = NULL;
 			if (tok->type == TOK_EOL)
 				break;
 		}
-		prev = tok;
-		tok = tok->next;
+		if (cmd_boundary) {
+			/* begin token list for next command */
+			commands[cmd_idx++] = tok;
+			cmd_boundary = false;
+		}
 	}
-	return execute_pipeline(commands, ncommands);
+	return execute_pipeline(commands, cmd_idx);
 }
 
 /* Execute a line of input to the shell.  On parse error, returns -1.  On memory
