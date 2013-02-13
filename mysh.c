@@ -80,6 +80,9 @@ enum token_type {
 #define TOK_CLASS_REDIRECTION \
 		(TOK_STDIN_REDIRECTION | TOK_STDOUT_REDIRECTION)
 
+#define TOK_CLASS_CMD_BOUNDARY \
+		(TOK_PIPE | TOK_EOL)
+
 struct token {
 	enum token_type type;
 	char *tok_data;
@@ -91,38 +94,27 @@ static ssize_t scan_quoted_string(const char **pp, char quote_char,
 {
 	const char *p = *pp;
 	bool escape = false;
-	bool eos = false;
-	size_t len = 0;
-
-	while (!eos) {
-		bool literal = true;
-		char c = *p;
-		switch (c) {
-		case '\\':
-			if (!escape) {
-				escape = true;
-				literal = false;
-			}
-			break;
-		case '\0':
+	ssize_t len = 0;
+	while (1) {
+		char c = *p++;
+		if (c == '\0') {
+			/* string ended before we found the terminating quote */
 			fprintf(stderr, SHELL_NAME ": error: no terminating quote\n");
 			return -1;
-		default:
-			if (c == quote_char) {
-				if (!escape) {
-					eos = true;
-					literal = false;
-				}
-			}
+		} else if (c == '\\' && !escape) {
+			/* escape the next character */
+			escape = true;
+		} else if (c == quote_char && !escape) {
+			/* found terminating quote */
 			break;
-		}
-		if (literal) {
+		} else {
+			/* literal character in the string */
 			if (out_buf)
 				*out_buf++ = c;
 			len++;
+			/* clear the escape flag */
 			escape = false;
 		}
-		p++;
 	}
 	*pp = p;
 	return len;
@@ -170,6 +162,10 @@ out:
 	return len;
 }
 
+/* Parse a quoted string where the quote was at *((*pp) - 1).  Update *pp to
+ * point to the next character after the parsed string.  @quote_char gives the
+ * quote character (double quote or single quote).  Return value is the string.
+ * */
 static char *parse_quoted_string(const char **pp, char quote_char)
 {
 	ssize_t len;
@@ -221,11 +217,13 @@ static struct token *next_token(const char **pp)
 		break;
 	case '\'':
 		type = TOK_SINGLE_QUOTED_STRING;
+		p++;
 		if (!(tok_data = parse_quoted_string(&p, '\'')))
 			return NULL;
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
+		p++;
 		if (!(tok_data = parse_quoted_string(&p, '"')))
 			return NULL;
 		break;
@@ -260,11 +258,45 @@ static struct token *next_token(const char **pp)
 	return tok;
 }
 
+static int execute_pipeline(struct token *pipe_commands[],
+			    unsigned int ncommands)
+{
+}
+
 /* Execute a line of input that has been parsed into tokens */
 static int execute_tok_list(struct token *tok_list)
 {
-	/* XXX */
-	return -1;
+	struct token *tok, *prev;
+	unsigned ncommands = 1;
+	unsigned i;
+	bool cmd_boundary;
+
+	for (tok = tok_list; tok->type != TOK_EOL; tok = tok->next)
+		if (tok->type == TOK_PIPE)
+			ncommands++;
+	struct token *commands[ncommands];
+
+	/* split the tokens into individual lists, around the '|' signs. */
+	i = 0;
+	cmd_boundary = true;
+	tok = tok_list;
+	prev = tok_list;
+
+	while (1) {
+		if (cmd_boundary) {
+			commands[i++] = tok;
+			cmd_boundary = false;
+		}
+		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
+			cmd_boundary = true;
+			prev->next = NULL;
+			if (tok->type == TOK_EOL)
+				break;
+		}
+		prev = tok;
+		tok = tok->next;
+	}
+	return execute_pipeline(commands, ncommands);
 }
 
 /* Execute a line of input to the shell.  On parse error, returns -1.  On memory
@@ -295,7 +327,6 @@ int main(int argc, char **argv)
 	FILE *in;
 	char *line;
 	size_t n;
-	ssize_t ret;
 	int status;
 
 	while ((c = getopt(argc, argv, "c:")) != -1) {
@@ -319,8 +350,13 @@ int main(int argc, char **argv)
 
 	status = 0;
 	line = NULL;
-	while ((ret = getline(&line, &n, in)) != -1)
+	while (1) {
+		if (in == stdin)
+			fputs("$ ", stdout);
+		if (getline(&line, &n, in) == -1)
+			break;
 		status = execute_line(line);
+	}
 
 	if (ferror(in))
 		error(1, errno, SHELL_NAME ": error reading from %s",
