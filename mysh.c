@@ -31,7 +31,8 @@
  *   - Multi-line commands are not supported (i.e. newline cannot be escaped,
  *     and strings cannot be multi-line).
  *   - ';' cannot be used to separate commands.
- *   - Redirecting standard error is not possible.
+ *   - Redirecting standard error is not possible; 2>&1 and similar redirections
+ *     will not work at all.
  *   - Filename globbing is not supported.
  *   - Functions are not supported.
  *   - Command substitution is not supported.
@@ -39,12 +40,14 @@
  *   - Startup files are not supported.
  *   - Job control is not supported (other than the ability to start a pipeline
  *     in the backgroup)
- *   - Exit status of commands is not made available.
+ *   - Exit status of commands is not made available, except for the fact that
+ *   the shell exit status is equal to the last exit status in the script.
  */
 
 #include <errno.h>
 #include <error.h>
 #include <getopt.h>
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +83,7 @@ enum token_type {
 struct token {
 	enum token_type type;
 	char *tok_data;
+	struct token *next;
 };
 
 static ssize_t scan_quoted_string(const char **pp, char quote_char,
@@ -196,6 +200,8 @@ static char *parse_unquoted_string(const char **pp)
 	return buf;
 }
 
+/* Return the next token from the line pointed to by *pp, and update *pp to
+ * point to the next unparsed part of the line. */
 static struct token *next_token(const char **pp)
 {
 	const char *p = *pp;
@@ -203,6 +209,11 @@ static struct token *next_token(const char **pp)
 	enum token_type type;
 	char *tok_data = NULL;
 
+	/* ignore whitespace between tokens */
+	while (isspace(*p))
+		p++;
+
+	/* choose the token type based on the next character */
 	switch (*p) {
 	case '&':
 		type = TOK_AMPERSAND;
@@ -220,47 +231,69 @@ static struct token *next_token(const char **pp)
 		break;
 	case '|':
 		type = TOK_PIPE;
+		p++;
 		break;
 	case '<':
 		type = TOK_STDIN_REDIRECTION;
+		p++;
 		break;
 	case '>':
 		type = TOK_STDOUT_REDIRECTION;
+		p++;
 		break;
 	case '\0':
 	case '#':
 		type = TOK_EOL;
 		break;
 	default:
+		/* anything that didn't match one of the special characters is
+		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
 		if (!(tok_data = parse_unquoted_string(&p)))
 			return NULL;
 		break;
 	}
 	tok = xmalloc(sizeof(struct token));
-	*pp = p;
 	tok->type = type;
 	tok->tok_data = tok_data;
+	*pp = p;
 	return tok;
 }
 
+/* Execute a line of input that has been parsed into tokens */
+static int execute_tok_list(struct token *tok_list)
+{
+	/* XXX */
+	return -1;
+}
+
+/* Execute a line of input to the shell.  On parse error, returns -1.  On memory
+ * allocation failure, aborts the program.  Otherwise, the return value is the
+ * exit status of the last command in the pipeline executed, or 0 if there were
+ * no commands in the pipeline (for example, just a comment). */
 static int execute_line(const char *line)
 {
-	struct token *tok;
+	/* Parse the line into tokens, then pass control off to
+	 * execute_tok_list(). */
+	struct token *tok, *tok_list = NULL, *tok_list_tail = NULL;
 	do {
 		tok = next_token(&line);
 		if (!tok)
 			return -1;
+		if (tok_list_tail)
+			tok_list_tail->next = tok;
+		else
+			tok_list = tok;
+		tok_list_tail = tok;
 	} while (tok->type != TOK_EOL);
-	/* XXX */
-	return 0;
+	return execute_tok_list(tok_list);
 }
 
 int main(int argc, char **argv)
 {
 	int c;
 	FILE *in;
-	char *line = NULL;
+	char *line;
 	size_t n;
 	ssize_t ret;
 	int status;
@@ -268,7 +301,7 @@ int main(int argc, char **argv)
 	while ((c = getopt(argc, argv, "c:")) != -1) {
 		switch (c) {
 		case 'c':
-			return execute_line(argv[1]);
+			return execute_line(optarg);
 		default:
 			error(2, 0, SHELL_NAME ": invalid option");
 		}
@@ -285,12 +318,13 @@ int main(int argc, char **argv)
 		in = stdin;
 
 	status = 0;
-	while ((ret = getline(&line, &n, in)) >= 0)
+	line = NULL;
+	while ((ret = getline(&line, &n, in)) != -1)
 		status = execute_line(line);
 
 	if (ferror(in))
 		error(1, errno, SHELL_NAME ": error reading from %s",
-		      argc == 0 ? "stdin" : argv[1]);
+		      (argc == 0 ? "stdin" : argv[1]));
 	fclose(in);
 	free(line);
 	return status;
