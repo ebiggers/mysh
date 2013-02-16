@@ -61,6 +61,10 @@
 #define SHELL_NAME "mysh"
 #define DEBUG 1
 
+#ifdef DEBUG
+#define MYSH_DEBUG printf
+#endif
+
 static void mysh_error(const char *fmt, ...)
 {
 	va_list va;
@@ -488,6 +492,7 @@ static int execute_pipeline(struct token *pipe_commands[],
 			if (redirs[nchildren].stdout_fd > 0)
 				new_stdout_fd = redirs[nchildren].stdout_fd;
 			if (new_stdin_fd > 0) {
+				MYSH_DEBUG("dup stdin %d to %d\n", new_stdin_fd, 0);
 				if (dup2(new_stdin_fd, 0) < 0) {
 					mysh_error_with_errno("Failed to duplicate stdin "
 							      "file descriptor");
@@ -495,6 +500,7 @@ static int execute_pipeline(struct token *pipe_commands[],
 				}
 			}
 			if (new_stdout_fd > 0) {
+				MYSH_DEBUG("dup stdout %d to %d\n", new_stdout_fd, 1);
 				if (dup2(new_stdout_fd, 1) < 0) {
 					mysh_error_with_errno("Failed to duplicate stdout "
 							      "file descriptor");
@@ -502,16 +508,17 @@ static int execute_pipeline(struct token *pipe_commands[],
 				}
 			}
 
-			char *argv[command_nargs[nchildren]];
+			char *argv[command_nargs[nchildren] + 1];
 			struct token *tok = pipe_commands[nchildren];
 			i = 0;
-			argv[0] = tok->tok_data;
+			argv[i++] = tok->tok_data;
 			for (tok = tok->next; 
 			     tok != NULL && (tok->type & TOK_CLASS_STRING);
 			     tok = tok->next)
 			{
-				argv[++i] = tok->tok_data;
+				argv[i++] = tok->tok_data;
 			}
+			argv[i] = NULL;
 			execvp(argv[0], argv);
 			mysh_error_with_errno("Failed to execute %s", argv[0]);
 			exit(-1);
