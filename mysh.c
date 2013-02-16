@@ -46,23 +46,35 @@
  */
 
 #include <errno.h>
-#include <error.h>
 #include <getopt.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define SHELL_NAME "mysh"
 #define DEBUG 1
 
+static void mysh_error(const char *fmt, ...)
+{
+	va_list va;
+	va_start(va, fmt);
+	fputs(SHELL_NAME ": error: ", stderr);
+	vfprintf(stderr, fmt, va);
+	fputc('\n', stderr);
+	va_end(va);
+}
+
 static void *xmalloc(size_t len)
 {
 	void *p = malloc(len);
-	if (!p)
-		error(1, 0, "out of memory");
+	if (!p) {
+		mysh_error("out of memory");
+		exit(1);
+	}
 	return p;
 }
 
@@ -76,6 +88,7 @@ enum token_type {
 	TOK_AMPERSAND            = 0x40,
 	TOK_EOL                  = 0x80,
 };
+
 
 #define TOK_CLASS_STRING \
 		(TOK_UNQUOTED_STRING | TOK_SINGLE_QUOTED_STRING | TOK_DOUBLE_QUOTED_STRING)
@@ -104,7 +117,7 @@ static ssize_t scan_single_quoted_string(const char **pp, char *out_buf)
 		*pp = term_quote + 1;
 	} else {
 		/* string ended before we found the terminating quote */
-		fprintf(stderr, SHELL_NAME ": error: no terminating quote\n");
+		mysh_error("no terminating quote");
 		len = -1;
 	}
 	return len;
@@ -119,7 +132,7 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 		char c = *p++;
 		if (c == '\0') {
 			/* string ended before we found the terminating quote */
-			fprintf(stderr, SHELL_NAME ": error: no terminating quote\n");
+			mysh_error("no terminating quote");
 			return -1;
 		} else if (c == '\\' && !escape) {
 			/* backslash: try to escape the next character */
@@ -128,12 +141,12 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 			/* found terminating double-quote */
 			break;
 		} else if (c == '$' && !escape) {
-			fprintf(stderr, SHELL_NAME ": error: found '$' in double-quoted "
-				"string, but variable expansion is not supported\n");
+			mysh_error("found '$' in double-quoted string, "
+				   "but variable expansion is not supported");
 			return -1;
 		} else if (c == '`' && !escape) {
-			fprintf(stderr, SHELL_NAME ": error: found '`' in double-quoted "
-				"string, but command expansion is not supported\n");
+			mysh_error("found '`' in double-quoted string, "
+				   "but command expansion is not supported");
 			return -1;
 		} else {
 			if (escape && c != '$' && c != '`' && c != '\\' && c != '"') {
@@ -284,56 +297,112 @@ static struct token *next_token(const char **pp)
 	return tok;
 }
 
+struct redirections {
+	const char *stdout_redirection;
+	const char *stdin_redirection;
+};
+
 /* command -> string args redirections
  * args -> e | args string
  * redirections -> stdin_redirection stdout_redirection
  * stdin_redirection -> '<' STRING | e
- * stdout_redirection -> '<' STRING | e
- */
+ * stdout_redirection -> '<' STRING | e */
+static int verify_command(const struct token *tok,
+			  struct redirections *redirections,
+			  bool *async,
+			  bool is_last)
+{
+	if (!(tok->type & TOK_CLASS_STRING)) {
+		mysh_error("expected string as first token of command");
+		return -1;
+	}
+	do {
+		tok = tok->next;
+		if (!tok)
+			return 0;
+	} while (tok->type & TOK_CLASS_STRING);
+
+	while (tok->type & TOK_CLASS_REDIRECTION) {
+		const char **filename_p;
+		if (!tok->next || !(tok->next->type & TOK_CLASS_STRING)) {
+			mysh_error("expected filename after redirection operator");
+			return -1;
+		}
+		if (tok->type == TOK_STDIN_REDIRECTION)
+			filename_p = &redirections->stdin_redirection;
+		else
+			filename_p = &redirections->stdout_redirection;
+		if (*filename_p)
+			mysh_error("found multiple redirections for same stream");
+		tok = tok->next;
+		*filename_p = tok->tok_data;
+		tok = tok->next;
+		if (!tok)
+			return 0;
+	}
+	if (is_last && tok->type == TOK_AMPERSAND) {
+		*async = true;
+		tok = tok->next;
+	}
+	if (tok) {
+		mysh_error("found trailing tokens in command");
+		return -1;
+	}
+	return 0;
+}
+
 static int execute_pipeline(struct token *pipe_commands[],
 			    unsigned int ncommands)
 {
+	unsigned i;
+	int ret;
 #ifdef DEBUG
-	{
-		unsigned i;
-		printf("executing pipeline containing %u commands\n", ncommands);
-		for (i = 0; i < ncommands; i++) {
-			struct token *tok;
-			printf("command %u: ", i);
-			for (tok = pipe_commands[i]; tok; tok = tok->next) {
-				switch (tok->type) {
-				case TOK_UNQUOTED_STRING:
-					printf("TOK_UNQUOTED_STRING(%s) ", tok->tok_data);
-					break;
-				case TOK_SINGLE_QUOTED_STRING:
-					printf("TOK_SINGLE_QUOTED_STRING(%s) ", tok->tok_data);
-					break;
-				case TOK_DOUBLE_QUOTED_STRING:
-					printf("TOK_DOUBLE_QUOTED_STRING(%s) ", tok->tok_data);
-					break;
-				case TOK_AMPERSAND:
-					printf("TOK_AMPERSAND ");
-					break;
-				case TOK_STDIN_REDIRECTION:
-					printf("TOK_STDIN_REDIRECTION ");
-					break;
-				case TOK_STDOUT_REDIRECTION:
-					printf("TOK_STDOUT_REDIRECTION ");
-					break;
-				case TOK_EOL:
-					printf("TOK_EOL ");
-					break;
-				case TOK_PIPE:
-					printf("TOK_PIPE ");
-					break;
-				default:
-					assert(0);
-				}
+	printf("executing pipeline containing %u commands\n", ncommands);
+	for (i = 0; i < ncommands; i++) {
+		struct token *tok;
+		printf("command %u: ", i);
+		for (tok = pipe_commands[i]; tok; tok = tok->next) {
+			switch (tok->type) {
+			case TOK_UNQUOTED_STRING:
+				printf("TOK_UNQUOTED_STRING(%s) ", tok->tok_data);
+				break;
+			case TOK_SINGLE_QUOTED_STRING:
+				printf("TOK_SINGLE_QUOTED_STRING(%s) ", tok->tok_data);
+				break;
+			case TOK_DOUBLE_QUOTED_STRING:
+				printf("TOK_DOUBLE_QUOTED_STRING(%s) ", tok->tok_data);
+				break;
+			case TOK_AMPERSAND:
+				printf("TOK_AMPERSAND ");
+				break;
+			case TOK_STDIN_REDIRECTION:
+				printf("TOK_STDIN_REDIRECTION ");
+				break;
+			case TOK_STDOUT_REDIRECTION:
+				printf("TOK_STDOUT_REDIRECTION ");
+				break;
+			case TOK_EOL:
+				printf("TOK_EOL ");
+				break;
+			case TOK_PIPE:
+				printf("TOK_PIPE ");
+				break;
+			default:
+				assert(0);
 			}
-			putchar('\n');
 		}
+		putchar('\n');
 	}
 #endif
+	struct redirections redirections[ncommands];
+	bool async = false;
+	memset(redirections, 0, sizeof(redirections));
+	for (i = 0; i < ncommands; i++) {
+		ret = verify_command(pipe_commands[i], &redirections[i],
+				     &async, (i == ncommands - 1));
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -369,8 +438,7 @@ static int execute_tok_list(struct token *tok_list)
 	{
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
 			if (cmd_boundary) {
-				fprintf(stderr,
-					SHELL_NAME ": error: empty command in pipeline\n");
+				mysh_error("empty command in pipeline");
 				return -1;
 			}
 			prev->next = NULL;
@@ -421,7 +489,8 @@ int main(int argc, char **argv)
 		case 'c':
 			return execute_line(optarg);
 		default:
-			error(2, 0, SHELL_NAME ": invalid option");
+			mysh_error("invalid option");
+			exit(2);
 		}
 	}
 
@@ -430,8 +499,10 @@ int main(int argc, char **argv)
 
 	if (argc) {
 		in = fopen(argv[1], "rb");
-		if (!in)
-			error(1, errno, SHELL_NAME ": can't open %s", argv[1]);
+		if (!in) {
+			mysh_error("can't open %s: %s", strerror(errno));
+			exit(1);
+		}
 	} else
 		in = stdin;
 
@@ -445,9 +516,11 @@ int main(int argc, char **argv)
 		status = execute_line(line);
 	}
 
-	if (ferror(in))
-		error(1, errno, SHELL_NAME ": error reading from %s",
-		      (argc == 0 ? "stdin" : argv[1]));
+	if (ferror(in)) {
+		mysh_error("error reading from %s: %s",
+			   (argc == 0 ? "stdin" : argv[1]), strerror(errno));
+		status = 1;
+	}
 	fclose(in);
 	free(line);
 	return status;
