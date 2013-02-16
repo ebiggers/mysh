@@ -92,8 +92,25 @@ struct token {
 	struct token *next;
 };
 
-static ssize_t scan_quoted_string(const char **pp, char quote_char,
-				  char *out_buf)
+/* single quotes preserve the literal value of every character in the string. */
+static ssize_t scan_single_quoted_string(const char **pp, char *out_buf)
+{
+	ssize_t len;
+	char *term_quote = strchr(*pp, '\'');
+	if (term_quote) {
+		len = term_quote - *pp;
+		if (out_buf)
+			memcpy(out_buf, *pp, len);
+		*pp = term_quote + 1;
+	} else {
+		/* string ended before we found the terminating quote */
+		fprintf(stderr, SHELL_NAME ": error: no terminating quote\n");
+		len = -1;
+	}
+	return len;
+}
+
+static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 {
 	const char *p = *pp;
 	bool escape = false;
@@ -105,12 +122,27 @@ static ssize_t scan_quoted_string(const char **pp, char quote_char,
 			fprintf(stderr, SHELL_NAME ": error: no terminating quote\n");
 			return -1;
 		} else if (c == '\\' && !escape) {
-			/* escape the next character */
+			/* backslash: try to escape the next character */
 			escape = true;
-		} else if (c == quote_char && !escape) {
-			/* found terminating quote */
+		} else if (c == '"' && !escape) {
+			/* found terminating double-quote */
 			break;
+		} else if (c == '$' && !escape) {
+			fprintf(stderr, SHELL_NAME ": error: found '$' in double-quoted "
+				"string, but variable expansion is not supported\n");
+			return -1;
+		} else if (c == '`' && !escape) {
+			fprintf(stderr, SHELL_NAME ": error: found '`' in double-quoted "
+				"string, but command expansion is not supported\n");
+			return -1;
 		} else {
+			if (escape && c != '$' && c != '`' && c != '\\' && c != '"') {
+				/* backslash followed by a character that does
+				 * not give backslash a special meaning */
+				if (out_buf)
+					*out_buf++ = '\\';
+				len++;
+			}
 			/* literal character in the string */
 			if (out_buf)
 				*out_buf++ = c;
@@ -160,40 +192,26 @@ static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
 	return len;
 }
 
-/* Parse a quoted string where the opening quote character was at *((*pp) - 1).
- * Update *pp to point to the next character after the closing quote.
- * @quote_char gives the quote character (double quote or single quote).  Return
- * value is the literal string in newly allocated memory, or NULL on parse
- * error.
- */
-static char *parse_quoted_string(const char **pp, char quote_char)
+typedef ssize_t (*scan_string_t)(const char **pp, char *out_buf);
+
+/* Parse a string (single-quoted, double-quoted, or unquoted, depending on the
+ * @scan_string function).  Update *pp to point to the next character after the
+ * end of the string.  Return value is the literal string in newly allocated
+ * memory, or NULL on parse error.  */
+static char *parse_string(const char **pp, scan_string_t scan_string)
 {
 	ssize_t len;
 	char *buf;
-	const char *p = *pp;
+	const char *p;
 	
 	/* get string length */
-	len = scan_quoted_string(&p, quote_char, NULL);
+	p = *pp;
+	len = scan_string(&p, NULL);
 	if (len == -1)
 		return NULL; /* parse error */
 	buf = xmalloc(len + 1);
 	/* get the string */
-	scan_quoted_string(pp, quote_char, buf);
-	buf[len] = '\0';
-	return buf;
-}
-
-static char *parse_unquoted_string(const char **pp)
-{
-	ssize_t len;
-	char *buf;
-	const char *p = *pp;
-	
-	len = scan_unquoted_string(&p, NULL);
-	if (len == -1)
-		return NULL;
-	buf = xmalloc(len + 1);
-	scan_unquoted_string(pp, buf);
+	scan_string(pp, buf);
 	buf[len] = '\0';
 	return buf;
 }
@@ -205,7 +223,7 @@ static struct token *next_token(const char **pp)
 	const char *p = *pp;
 	struct token *tok;
 	enum token_type type;
-	char *tok_data = NULL;
+	char *tok_data;
 
 	/* ignore whitespace between tokens */
 	while (isspace(*p))
@@ -213,6 +231,7 @@ static struct token *next_token(const char **pp)
 
 	/* Choose the token type based on the next character, then parse the
 	 * token. */
+	tok_data = NULL;
 	switch (*p) {
 	case '&':
 		type = TOK_AMPERSAND;
@@ -221,13 +240,13 @@ static struct token *next_token(const char **pp)
 	case '\'':
 		type = TOK_SINGLE_QUOTED_STRING;
 		p++;
-		if (!(tok_data = parse_quoted_string(&p, '\'')))
+		if (!(tok_data = parse_string(&p, scan_single_quoted_string)))
 			return NULL; /* parse error */
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
 		p++;
-		if (!(tok_data = parse_quoted_string(&p, '"')))
+		if (!(tok_data = parse_string(&p, scan_double_quoted_string)))
 			return NULL; /* parse error */
 		break;
 	case '|':
@@ -250,7 +269,7 @@ static struct token *next_token(const char **pp)
 		/* anything that didn't match one of the special characters is
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
-		if (!(tok_data = parse_unquoted_string(&p)))
+		if (!(tok_data = parse_string(&p, scan_unquoted_string)))
 			return NULL; /* parse error */
 		break;
 	}
@@ -315,13 +334,14 @@ static int execute_pipeline(struct token *pipe_commands[],
 		}
 	}
 #endif
+	return 0;
 }
 
 /* Execute a line of input that has been parsed into tokens */
 static int execute_tok_list(struct token *tok_list)
 {
 	struct token *tok, *prev;
-	unsigned ncommands = 1;
+	unsigned ncommands;
 	unsigned cmd_idx;
 	bool cmd_boundary;
 
@@ -329,6 +349,10 @@ static int execute_tok_list(struct token *tok_list)
 	tok = tok_list;
 	if (tok->type == TOK_EOL) /* empty line */
 		return 0;
+
+	/* split the tokens into individual lists (commands), around the '|'
+	 * signs. */
+	ncommands = 1;
 	do {
 		if (tok->type == TOK_PIPE)
 			ncommands++;
@@ -337,7 +361,6 @@ static int execute_tok_list(struct token *tok_list)
 
 	struct token *commands[ncommands];
 
-	/* split the tokens into individual lists, around the '|' signs. */
 	cmd_idx = 0;
 	cmd_boundary = true;
 	for (tok = tok_list, prev = NULL;
