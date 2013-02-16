@@ -59,10 +59,12 @@
 #include <string.h>
 
 #define SHELL_NAME "mysh"
-#define DEBUG 1
+/*#define DEBUG 1*/
 
 #ifdef DEBUG
 #define MYSH_DEBUG(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
+#else
+#define MYSH_DEBUG(fmt, ...)
 #endif
 
 static void mysh_error(const char *fmt, ...)
@@ -318,8 +320,6 @@ static struct token *next_token(const char **pp)
 struct redirections {
 	const char *stdin_filename;
 	const char *stdout_filename;
-	int stdin_fd;
-	int stdout_fd;
 };
 
 /* command -> string args redirections
@@ -376,15 +376,101 @@ static int verify_command(const struct token *tok,
 	return 0;
 }
 
+static int start_child(const struct token * const command_toks,
+		       const struct redirections * const redirs,
+		       const unsigned cmd_nargs,
+		       const unsigned pipeline_cmd_idx,
+		       const unsigned pipeline_ncommands,
+		       const int pipe_fds[2],
+		       const int prev_read_end)
+{
+	int new_stdout_fd = -1;
+	int new_stdin_fd = -1;
+	char *argv[cmd_nargs + 1];
+	const struct token *tok;
+	unsigned i;
+
+	if (redirs->stdin_filename != NULL) {
+		new_stdin_fd = open(redirs->stdin_filename, O_RDONLY);
+		if (new_stdin_fd < 0) {
+			mysh_error_with_errno("can't open %s for reading",
+					      redirs->stdin_filename);
+			exit(-1);
+		}
+	}
+	if (redirs->stdout_filename != NULL) {
+		new_stdout_fd = open(redirs->stdout_filename,
+				     O_WRONLY | O_CREAT | O_TRUNC, 0666);
+		if (new_stdout_fd < 0) {
+			mysh_error_with_errno("can't open %s for writing",
+					      redirs->stdout_filename);
+			exit(-1);
+		}
+	}
+
+	if (pipeline_cmd_idx != 0) {
+		/* not the first command in the pipeline:
+		 * assign read end of pipe, or close it if it's
+		 * not being used */
+		if (new_stdin_fd < 0)
+			new_stdin_fd = prev_read_end;
+		else
+			close(prev_read_end);
+	}
+
+	if (pipeline_cmd_idx != pipeline_ncommands - 1) {
+		/* not the last command in the pipeline: close
+		 * read end of pipe we are writing to, then
+		 * assign write end of pipe, or close it if it's
+		 * not being used */
+		close(pipe_fds[0]);
+		if (new_stdout_fd < 0)
+			new_stdout_fd = pipe_fds[1];
+		else
+			close(pipe_fds[1]);
+	}
+
+	if (new_stdin_fd >= 0) {
+		if (dup2(new_stdin_fd, 0) < 0) {
+			mysh_error_with_errno("Failed to duplicate stdin "
+					      "file descriptor");
+			exit(-1);
+		}
+		close(new_stdin_fd);
+	}
+	if (new_stdout_fd >= 0) {
+		if (dup2(new_stdout_fd, 1) < 0) {
+			mysh_error_with_errno("Failed to duplicate stdout "
+					      "file descriptor");
+			exit(-1);
+		}
+		close(new_stdout_fd);
+	}
+
+	i = 0;
+	tok = command_toks;
+	argv[i++] = tok->tok_data;
+	for (tok = tok->next; 
+	     tok != NULL && (tok->type & TOK_CLASS_STRING);
+	     tok = tok->next)
+	{
+		argv[i++] = tok->tok_data;
+	}
+	argv[i] = NULL;
+	execvp(argv[0], argv);
+	mysh_error_with_errno("Failed to execute %s", argv[0]);
+	exit(-1);
+}
+
 static int execute_pipeline(struct token *pipe_commands[],
 			    unsigned int ncommands)
 {
 	unsigned i;
-	unsigned npipes;
 	unsigned cmd_idx;
 	int ret;
 	struct redirections redirs[ncommands];
-	int pipe_fds[ncommands - 1][2];
+	int pipe_fds[2];
+	int prev_read_end;
 	unsigned command_nargs[ncommands];
 	pid_t child_pids[ncommands];
 	bool async = false;
@@ -438,146 +524,69 @@ static int execute_pipeline(struct token *pipe_commands[],
 			return ret;
 	}
 
-	/* open pipes */
-	for (npipes = 0; npipes < ncommands - 1; npipes++) {
-		if (pipe(pipe_fds[npipes])) {
-			mysh_error_with_errno("can't create pipe fds");
-			ret = -1;
-			goto out_close_pipes;
-		}
-	}
-
 	/* execute the commands */
+	prev_read_end = pipe_fds[0] = pipe_fds[1] = -1;
 	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
+		/* create any new pipes needed */
+		if (prev_read_end != -1)
+			close(prev_read_end);
+		prev_read_end = pipe_fds[0];
+		pipe_fds[0] = -1;
+		if (cmd_idx != ncommands - 1) {
+			if (pipe_fds[1] != -1) {
+				close(pipe_fds[1]);
+				pipe_fds[1] = -1;
+			}
+			MYSH_DEBUG("Created pipe\n");
+			if (pipe(pipe_fds)) {
+				mysh_error_with_errno("can't create pipes");
+				goto out_close_pipes;
+			}
+		}
 		ret = fork();
 		if (ret == -1) {
 			/* fork() error */
 			mysh_error_with_errno("can't fork child process");
-			goto out_wait_children;
+			goto out_close_pipes;
 		} else if (ret == 0) {
-			/* child */
-			if (redirs[cmd_idx].stdin_filename != NULL) {
-				redirs[cmd_idx].stdin_fd =
-					open(redirs[cmd_idx].stdin_filename, O_RDONLY);
-				if (redirs[cmd_idx].stdin_fd <= 0) {
-					mysh_error_with_errno("can't open %s for reading",
-							      redirs[cmd_idx].stdin_filename);
-					ret = -1;
-					goto out_close_redirection_files;
-				}
-			}
-			if (redirs[cmd_idx].stdout_filename != NULL) {
-				redirs[cmd_idx].stdout_fd =
-					open(redirs[cmd_idx].stdout_filename,
-					     O_WRONLY | O_CREAT | O_TRUNC, 0666);
-				if (redirs[cmd_idx].stdout_fd <= 0) {
-					mysh_error_with_errno("can't open %s for writing",
-							      redirs[cmd_idx].stdout_filename);
-					ret = -1;
-					goto out_close_redirection_files;
-				}
-			}
-			int new_stdout_fd = -1;
-			int new_stdin_fd = -1;
-			if (cmd_idx != ncommands - 1) {
-				/* not last in pipeline: stdout may be pipe */
-				new_stdout_fd = pipe_fds[cmd_idx][1];
-			}
-			if (cmd_idx != 0) {
-				/* not first in pipeline: stdin may be pipe */
-				new_stdin_fd = pipe_fds[cmd_idx - 1][0];
-			}
-			/* overwrite pipes with redirections */
-			if (redirs[cmd_idx].stdin_fd > 0)
-				new_stdin_fd = redirs[cmd_idx].stdin_fd;
-			if (redirs[cmd_idx].stdout_fd > 0)
-				new_stdout_fd = redirs[cmd_idx].stdout_fd;
-			if (new_stdin_fd > 0) {
-				MYSH_DEBUG("cmd %u: dup stdin %d to %d\n",
-					   cmd_idx, new_stdin_fd, 0);
-				if (dup2(new_stdin_fd, 0) < 0) {
-					mysh_error_with_errno("Failed to duplicate stdin "
-							      "file descriptor");
-					exit(-1);
-				}
-			}
-			if (new_stdout_fd > 0) {
-				MYSH_DEBUG("cmd %u: dup stdout %d to %d\n",
-					   cmd_idx, new_stdout_fd, 1);
-				if (dup2(new_stdout_fd, 1) < 0) {
-					mysh_error_with_errno("Failed to duplicate stdout "
-							      "file descriptor");
-					exit(-1);
-				}
-			}
-
-			char *argv[command_nargs[cmd_idx] + 1];
-			struct token *tok = pipe_commands[cmd_idx];
-			i = 0;
-			argv[i++] = tok->tok_data;
-			for (tok = tok->next; 
-			     tok != NULL && (tok->type & TOK_CLASS_STRING);
-			     tok = tok->next)
-			{
-				argv[i++] = tok->tok_data;
-			}
-			argv[i] = NULL;
-			execvp(argv[0], argv);
-			mysh_error_with_errno("Failed to execute %s", argv[0]);
-			exit(-1);
+			/* child: set up file descriptors and execute process */
+			start_child(pipe_commands[cmd_idx], &redirs[cmd_idx],
+				    command_nargs[cmd_idx], cmd_idx, ncommands,
+				    pipe_fds, prev_read_end);
 		} else {
+			/* parent: save child pid */
 			child_pids[cmd_idx] = ret;
-			/* parent */
 		}
 	}
-
-	for (i = 0; i < npipes; i++) {
-		if (close(pipe_fds[i][0])) {
-			mysh_error_with_errno("Failed to close read end of pipe %u", i);
-			if (ret == 0)
-				ret = -1;
-		}
-		if (close(pipe_fds[i][1])) {
-			mysh_error_with_errno("Failed to close write end of pipe %u", i);
-			if (ret == 0)
-				ret = -1;
-		}
-	}
-	npipes = 0;
 	ret = 0;
-out_wait_children:
-	for (i = 0; i < cmd_idx; i++) {
-		int status;
-		MYSH_DEBUG("Wait for pid %d\n", child_pids[i]);
-		/*if (wait(&status) == -1) {*/
-		if (waitpid(child_pids[i], &status, 0) == -1) {
-			if (ret == 0)
-				ret = -1;
-			mysh_error_with_errno("Failed to wait for child with "
-					      "pid %d to terminate", child_pids[i]);
-		}
-		if (WIFEXITED(status)) {
-			if (ret == 0)
-				ret = WEXITSTATUS(status);
-		} else {
-			mysh_error("Child process with pid %d was abnormally "
-				   "terminated", child_pids[i]);
-			if (ret == 0)
-				ret = -1;
-		}
-	}
-out_close_redirection_files:
-	for (i = 0; i < ncommands; i++) {
-		if (redirs[i].stdin_fd > 0)
-			close(redirs[i].stdin_fd);
-		if (redirs[i].stdout_fd > 0)
-			close(redirs[i].stdout_fd);
-	}
 out_close_pipes:
-	for (i = 0; i < npipes; i++) {
-		MYSH_DEBUG("close pipe %u", i);
-		close(pipe_fds[i][0]);
-		close(pipe_fds[i][1]);
+	if (pipe_fds[0] != -1)
+		close(pipe_fds[0]);
+	if (pipe_fds[1] != -1)
+		close(pipe_fds[1]);
+	if (prev_read_end != -1)
+		close(prev_read_end);
+	if (ret == 0 && !async) {
+		for (i = 0; i < cmd_idx; i++) {
+			int status;
+			MYSH_DEBUG("Wait for pid %d\n", child_pids[i]);
+			/*if (wait(&status) == -1) {*/
+			if (waitpid(child_pids[i], &status, 0) == -1) {
+				if (ret == 0)
+					ret = -1;
+				mysh_error_with_errno("Failed to wait for child with "
+						      "pid %d to terminate", child_pids[i]);
+			}
+			if (WIFEXITED(status)) {
+				if (ret == 0)
+					ret = WEXITSTATUS(status);
+			} else {
+				mysh_error("Child process with pid %d was abnormally "
+					   "terminated", child_pids[i]);
+				if (ret == 0)
+					ret = -1;
+			}
+		}
 	}
 	return ret;
 }

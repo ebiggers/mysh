@@ -1,2 +1,2 @@
-CFLAGS := -O2 -Wall
+CFLAGS := -O2 -Wall -g
 mysh:mysh.c
