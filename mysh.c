@@ -25,7 +25,8 @@
  *   - Comments are supported (begin with '#' character)
  *
  * Limitations:
- *   - There are no shell variables.
+ *   - There are no variables (shell variables, environmental variables,
+ *     positional parameters)
  *   - Control statements such as 'if', 'for', and 'case' are not supported.
  *   - There are no shell builtins.
  *   - Multi-line commands are not supported (i.e. newline cannot be escaped,
@@ -49,11 +50,13 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define SHELL_NAME "mysh"
+#define DEBUG 1
 
 static void *xmalloc(size_t len)
 {
@@ -120,62 +123,61 @@ static ssize_t scan_quoted_string(const char **pp, char quote_char,
 	return len;
 }
 
+static unsigned char is_special[256] = {
+	[ '\\'] = 1,
+	[ '\''] = 1,
+	[ '"']  = 1,
+	[ '&']  = 1,
+	[ '#']  = 1,
+	[ '|']  = 1,
+	[ '>']  = 1,
+	[ '<']  = 1,
+	[ ' ']  = 1,
+	[ '\t'] = 1,
+	[ '\n'] = 1,
+	[ '\r'] = 1,
+};
+
 static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
 {
-	bool escape = false;
-	const char *p = *pp;
+	const char *p;
 	ssize_t len = 0;
-	while (*p) {
-		bool literal = true;
-		char c = *p;
-		switch (c) {
-		case '\\':
-			if (!escape) {
+	bool escape = false;
+	for (p = *pp; *p; p++) {
+		if (is_special[(unsigned char)*p] && !escape) {
+			if (*p == '\\') {
 				escape = true;
-				literal = false;
-			}
-			break;
-		case '\'':
-		case '"':
-		case '&':
-		case '#':
-		case '|':
-		case '>':
-		case '<':
-		case ' ':
-		case '\t':
-			if (!escape)
-				goto out;
-		default:
-			break;
+				continue;
+			} else
+				break;
 		}
-		if (literal) {
-			if (out_buf)
-				*out_buf++ = c;
-			len++;
-			escape = false;
-		}
-		p++;
+		if (out_buf)
+			*out_buf++ = *p;
+		len++;
+		escape = false;
 	}
-out:
 	*pp = p;
 	return len;
 }
 
-/* Parse a quoted string where the quote was at *((*pp) - 1).  Update *pp to
- * point to the next character after the parsed string.  @quote_char gives the
- * quote character (double quote or single quote).  Return value is the string.
- * */
+/* Parse a quoted string where the opening quote character was at *((*pp) - 1).
+ * Update *pp to point to the next character after the closing quote.
+ * @quote_char gives the quote character (double quote or single quote).  Return
+ * value is the literal string in newly allocated memory, or NULL on parse
+ * error.
+ */
 static char *parse_quoted_string(const char **pp, char quote_char)
 {
 	ssize_t len;
 	char *buf;
 	const char *p = *pp;
 	
+	/* get string length */
 	len = scan_quoted_string(&p, quote_char, NULL);
 	if (len == -1)
-		return NULL;
+		return NULL; /* parse error */
 	buf = xmalloc(len + 1);
+	/* get the string */
 	scan_quoted_string(pp, quote_char, buf);
 	buf[len] = '\0';
 	return buf;
@@ -197,7 +199,7 @@ static char *parse_unquoted_string(const char **pp)
 }
 
 /* Return the next token from the line pointed to by *pp, and update *pp to
- * point to the next unparsed part of the line. */
+ * point to the next unparsed part of the line.  Returns NULL on parse error. */
 static struct token *next_token(const char **pp)
 {
 	const char *p = *pp;
@@ -209,7 +211,8 @@ static struct token *next_token(const char **pp)
 	while (isspace(*p))
 		p++;
 
-	/* choose the token type based on the next character */
+	/* Choose the token type based on the next character, then parse the
+	 * token. */
 	switch (*p) {
 	case '&':
 		type = TOK_AMPERSAND;
@@ -219,13 +222,13 @@ static struct token *next_token(const char **pp)
 		type = TOK_SINGLE_QUOTED_STRING;
 		p++;
 		if (!(tok_data = parse_quoted_string(&p, '\'')))
-			return NULL;
+			return NULL; /* parse error */
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
 		p++;
 		if (!(tok_data = parse_quoted_string(&p, '"')))
-			return NULL;
+			return NULL; /* parse error */
 		break;
 	case '|':
 		type = TOK_PIPE;
@@ -239,8 +242,8 @@ static struct token *next_token(const char **pp)
 		type = TOK_STDOUT_REDIRECTION;
 		p++;
 		break;
-	case '\0':
-	case '#':
+	case '\0': /* real end-of-line */
+	case '#': /* everything after '#' character is a comment */
 		type = TOK_EOL;
 		break;
 	default:
@@ -248,12 +251,16 @@ static struct token *next_token(const char **pp)
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
 		if (!(tok_data = parse_unquoted_string(&p)))
-			return NULL;
+			return NULL; /* parse error */
 		break;
 	}
+	/* allocate and initialize the token */
 	tok = xmalloc(sizeof(struct token));
 	tok->type = type;
+	/* tok_data defaults to NULL if not explicitly set for a string token */
 	tok->tok_data = tok_data;
+
+	/* return the token and the pointer to the next unparsed character */
 	*pp = p;
 	return tok;
 }
@@ -267,6 +274,47 @@ static struct token *next_token(const char **pp)
 static int execute_pipeline(struct token *pipe_commands[],
 			    unsigned int ncommands)
 {
+#ifdef DEBUG
+	{
+		unsigned i;
+		printf("executing pipeline containing %u commands\n", ncommands);
+		for (i = 0; i < ncommands; i++) {
+			struct token *tok;
+			printf("command %u: ", i);
+			for (tok = pipe_commands[i]; tok; tok = tok->next) {
+				switch (tok->type) {
+				case TOK_UNQUOTED_STRING:
+					printf("TOK_UNQUOTED_STRING(%s) ", tok->tok_data);
+					break;
+				case TOK_SINGLE_QUOTED_STRING:
+					printf("TOK_SINGLE_QUOTED_STRING(%s) ", tok->tok_data);
+					break;
+				case TOK_DOUBLE_QUOTED_STRING:
+					printf("TOK_DOUBLE_QUOTED_STRING(%s) ", tok->tok_data);
+					break;
+				case TOK_AMPERSAND:
+					printf("TOK_AMPERSAND ");
+					break;
+				case TOK_STDIN_REDIRECTION:
+					printf("TOK_STDIN_REDIRECTION ");
+					break;
+				case TOK_STDOUT_REDIRECTION:
+					printf("TOK_STDOUT_REDIRECTION ");
+					break;
+				case TOK_EOL:
+					printf("TOK_EOL ");
+					break;
+				case TOK_PIPE:
+					printf("TOK_PIPE ");
+					break;
+				default:
+					assert(0);
+				}
+			}
+			putchar('\n');
+		}
+	}
+#endif
 }
 
 /* Execute a line of input that has been parsed into tokens */
@@ -274,7 +322,7 @@ static int execute_tok_list(struct token *tok_list)
 {
 	struct token *tok, *prev;
 	unsigned ncommands = 1;
-	unsigned i;
+	unsigned cmd_idx;
 	bool cmd_boundary;
 
 
@@ -305,8 +353,8 @@ static int execute_tok_list(struct token *tok_list)
 			prev->next = NULL;
 			if (tok->type == TOK_EOL)
 				break;
-		}
-		if (cmd_boundary) {
+			cmd_boundary = true;
+		} else if (cmd_boundary) {
 			/* begin token list for next command */
 			commands[cmd_idx++] = tok;
 			cmd_boundary = false;
@@ -326,7 +374,7 @@ static int execute_line(const char *line)
 	struct token *tok, *tok_list = NULL, *tok_list_tail = NULL;
 	do {
 		tok = next_token(&line);
-		if (!tok)
+		if (!tok) /* parse error */
 			return -1;
 		if (tok_list_tail)
 			tok_list_tail->next = tok;
