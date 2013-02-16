@@ -62,7 +62,7 @@
 #define DEBUG 1
 
 #ifdef DEBUG
-#define MYSH_DEBUG printf
+#define MYSH_DEBUG(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
 #endif
 
 static void mysh_error(const char *fmt, ...)
@@ -355,8 +355,10 @@ static int verify_command(const struct token *tok,
 			filename_p = &redirs_ret->stdin_filename;
 		else
 			filename_p = &redirs_ret->stdout_filename;
-		if (*filename_p)
+		if (*filename_p) {
 			mysh_error("found multiple redirections for same stream");
+			return -1;
+		}
 		tok = tok->next;
 		*filename_p = tok->tok_data;
 		tok = tok->next;
@@ -379,7 +381,7 @@ static int execute_pipeline(struct token *pipe_commands[],
 {
 	unsigned i;
 	unsigned npipes;
-	unsigned nchildren;
+	unsigned cmd_idx;
 	int ret;
 	struct redirections redirs[ncommands];
 	int pipe_fds[ncommands - 1][2];
@@ -445,30 +447,8 @@ static int execute_pipeline(struct token *pipe_commands[],
 		}
 	}
 
-	/* open redirection files */
-	for (i = 0; i < ncommands; i++) {
-		if (redirs[i].stdin_filename != NULL) {
-			redirs[i].stdin_fd = open(redirs[i].stdin_filename, O_RDONLY);
-			if (redirs[i].stdin_fd <= 0) {
-				mysh_error_with_errno("can't open %s for reading",
-						      redirs[i].stdin_filename);
-				ret = -1;
-				goto out_close_redirection_files;
-			}
-		}
-		if (redirs[i].stdout_filename != NULL) {
-			redirs[i].stdout_fd = open(redirs[i].stdout_filename, O_WRONLY);
-			if (redirs[i].stdout_fd <= 0) {
-				mysh_error_with_errno("can't open %s for writing",
-						      redirs[i].stdout_filename);
-				ret = -1;
-				goto out_close_redirection_files;
-			}
-		}
-	}
-
 	/* execute the commands */
-	for (nchildren = 0; nchildren < ncommands; nchildren++) {
+	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
 		ret = fork();
 		if (ret == -1) {
 			/* fork() error */
@@ -476,23 +456,45 @@ static int execute_pipeline(struct token *pipe_commands[],
 			goto out_wait_children;
 		} else if (ret == 0) {
 			/* child */
+			if (redirs[cmd_idx].stdin_filename != NULL) {
+				redirs[cmd_idx].stdin_fd =
+					open(redirs[cmd_idx].stdin_filename, O_RDONLY);
+				if (redirs[cmd_idx].stdin_fd <= 0) {
+					mysh_error_with_errno("can't open %s for reading",
+							      redirs[cmd_idx].stdin_filename);
+					ret = -1;
+					goto out_close_redirection_files;
+				}
+			}
+			if (redirs[cmd_idx].stdout_filename != NULL) {
+				redirs[cmd_idx].stdout_fd =
+					open(redirs[cmd_idx].stdout_filename,
+					     O_WRONLY | O_CREAT | O_TRUNC, 0666);
+				if (redirs[cmd_idx].stdout_fd <= 0) {
+					mysh_error_with_errno("can't open %s for writing",
+							      redirs[cmd_idx].stdout_filename);
+					ret = -1;
+					goto out_close_redirection_files;
+				}
+			}
 			int new_stdout_fd = -1;
 			int new_stdin_fd = -1;
-			if (nchildren != ncommands - 1) {
+			if (cmd_idx != ncommands - 1) {
 				/* not last in pipeline: stdout may be pipe */
-				new_stdout_fd = pipe_fds[nchildren][1];
+				new_stdout_fd = pipe_fds[cmd_idx][1];
 			}
-			if (nchildren != 0) {
+			if (cmd_idx != 0) {
 				/* not first in pipeline: stdin may be pipe */
-				new_stdin_fd = pipe_fds[nchildren - 1][0];
+				new_stdin_fd = pipe_fds[cmd_idx - 1][0];
 			}
 			/* overwrite pipes with redirections */
-			if (redirs[nchildren].stdin_fd > 0)
-				new_stdin_fd = redirs[nchildren].stdin_fd;
-			if (redirs[nchildren].stdout_fd > 0)
-				new_stdout_fd = redirs[nchildren].stdout_fd;
+			if (redirs[cmd_idx].stdin_fd > 0)
+				new_stdin_fd = redirs[cmd_idx].stdin_fd;
+			if (redirs[cmd_idx].stdout_fd > 0)
+				new_stdout_fd = redirs[cmd_idx].stdout_fd;
 			if (new_stdin_fd > 0) {
-				MYSH_DEBUG("dup stdin %d to %d\n", new_stdin_fd, 0);
+				MYSH_DEBUG("cmd %u: dup stdin %d to %d\n",
+					   cmd_idx, new_stdin_fd, 0);
 				if (dup2(new_stdin_fd, 0) < 0) {
 					mysh_error_with_errno("Failed to duplicate stdin "
 							      "file descriptor");
@@ -500,7 +502,8 @@ static int execute_pipeline(struct token *pipe_commands[],
 				}
 			}
 			if (new_stdout_fd > 0) {
-				MYSH_DEBUG("dup stdout %d to %d\n", new_stdout_fd, 1);
+				MYSH_DEBUG("cmd %u: dup stdout %d to %d\n",
+					   cmd_idx, new_stdout_fd, 1);
 				if (dup2(new_stdout_fd, 1) < 0) {
 					mysh_error_with_errno("Failed to duplicate stdout "
 							      "file descriptor");
@@ -508,8 +511,8 @@ static int execute_pipeline(struct token *pipe_commands[],
 				}
 			}
 
-			char *argv[command_nargs[nchildren] + 1];
-			struct token *tok = pipe_commands[nchildren];
+			char *argv[command_nargs[cmd_idx] + 1];
+			struct token *tok = pipe_commands[cmd_idx];
 			i = 0;
 			argv[i++] = tok->tok_data;
 			for (tok = tok->next; 
@@ -523,15 +526,30 @@ static int execute_pipeline(struct token *pipe_commands[],
 			mysh_error_with_errno("Failed to execute %s", argv[0]);
 			exit(-1);
 		} else {
-			child_pids[nchildren] = ret;
+			child_pids[cmd_idx] = ret;
 			/* parent */
 		}
 	}
 
+	for (i = 0; i < npipes; i++) {
+		if (close(pipe_fds[i][0])) {
+			mysh_error_with_errno("Failed to close read end of pipe %u", i);
+			if (ret == 0)
+				ret = -1;
+		}
+		if (close(pipe_fds[i][1])) {
+			mysh_error_with_errno("Failed to close write end of pipe %u", i);
+			if (ret == 0)
+				ret = -1;
+		}
+	}
+	npipes = 0;
 	ret = 0;
 out_wait_children:
-	for (i = 0; i < nchildren; i++) {
+	for (i = 0; i < cmd_idx; i++) {
 		int status;
+		MYSH_DEBUG("Wait for pid %d\n", child_pids[i]);
+		/*if (wait(&status) == -1) {*/
 		if (waitpid(child_pids[i], &status, 0) == -1) {
 			if (ret == 0)
 				ret = -1;
@@ -557,6 +575,7 @@ out_close_redirection_files:
 	}
 out_close_pipes:
 	for (i = 0; i < npipes; i++) {
+		MYSH_DEBUG("close pipe %u", i);
 		close(pipe_fds[i][0]);
 		close(pipe_fds[i][1]);
 	}
