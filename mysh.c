@@ -59,8 +59,8 @@
 #include <string.h>
 
 #define SHELL_NAME "mysh"
-#define DEBUG 1
 
+/*#define DEBUG*/
 #ifdef DEBUG
 #define MYSH_DEBUG(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
 #else
@@ -544,11 +544,11 @@ static int execute_pipeline(struct token **pipe_commands,
 			close(prev_read_end);
 		prev_read_end = pipe_fds[0];
 		pipe_fds[0] = -1;
+		if (pipe_fds[1] != -1) {
+			close(pipe_fds[1]);
+			pipe_fds[1] = -1;
+		}
 		if (cmd_idx != ncommands - 1) {
-			if (pipe_fds[1] != -1) {
-				close(pipe_fds[1]);
-				pipe_fds[1] = -1;
-			}
 			MYSH_DEBUG("Created pipe\n");
 			if (pipe(pipe_fds)) {
 				mysh_error_with_errno("can't create pipes");
