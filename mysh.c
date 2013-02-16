@@ -51,7 +51,10 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <stdarg.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,6 +67,17 @@ static void mysh_error(const char *fmt, ...)
 	va_start(va, fmt);
 	fputs(SHELL_NAME ": error: ", stderr);
 	vfprintf(stderr, fmt, va);
+	fputc('\n', stderr);
+	va_end(va);
+}
+
+static void mysh_error_with_errno(const char *fmt, ...)
+{
+	va_list va;
+	va_start(va, fmt);
+	fputs(SHELL_NAME ": error: ", stderr);
+	vfprintf(stderr, fmt, va);
+	fprintf(stderr, ": %s", strerror(errno));
 	fputc('\n', stderr);
 	va_end(va);
 }
@@ -298,8 +312,10 @@ static struct token *next_token(const char **pp)
 }
 
 struct redirections {
-	const char *stdout_redirection;
-	const char *stdin_redirection;
+	const char *stdin_filename;
+	const char *stdout_filename;
+	int stdin_fd;
+	int stdout_fd;
 };
 
 /* command -> string args redirections
@@ -308,16 +324,19 @@ struct redirections {
  * stdin_redirection -> '<' STRING | e
  * stdout_redirection -> '<' STRING | e */
 static int verify_command(const struct token *tok,
-			  struct redirections *redirections,
-			  bool *async,
-			  bool is_last)
+			  const bool is_last,
+			  bool *async_ret,
+			  unsigned *nargs_ret,
+			  struct redirections *redirs_ret)
 {
+	unsigned nargs = 0;
 	if (!(tok->type & TOK_CLASS_STRING)) {
 		mysh_error("expected string as first token of command");
 		return -1;
 	}
 	do {
 		tok = tok->next;
+		nargs++;
 		if (!tok)
 			return 0;
 	} while (tok->type & TOK_CLASS_STRING);
@@ -329,9 +348,9 @@ static int verify_command(const struct token *tok,
 			return -1;
 		}
 		if (tok->type == TOK_STDIN_REDIRECTION)
-			filename_p = &redirections->stdin_redirection;
+			filename_p = &redirs_ret->stdin_filename;
 		else
-			filename_p = &redirections->stdout_redirection;
+			filename_p = &redirs_ret->stdout_filename;
 		if (*filename_p)
 			mysh_error("found multiple redirections for same stream");
 		tok = tok->next;
@@ -341,7 +360,7 @@ static int verify_command(const struct token *tok,
 			return 0;
 	}
 	if (is_last && tok->type == TOK_AMPERSAND) {
-		*async = true;
+		*async_ret = true;
 		tok = tok->next;
 	}
 	if (tok) {
@@ -355,7 +374,15 @@ static int execute_pipeline(struct token *pipe_commands[],
 			    unsigned int ncommands)
 {
 	unsigned i;
+	unsigned npipes;
+	unsigned nchildren;
 	int ret;
+	struct redirections redirs[ncommands];
+	int pipe_fds[ncommands - 1][2];
+	unsigned command_nargs[ncommands];
+	pid_t child_pids[ncommands];
+	bool async = false;
+
 #ifdef DEBUG
 	printf("executing pipeline containing %u commands\n", ncommands);
 	for (i = 0; i < ncommands; i++) {
@@ -394,16 +421,139 @@ static int execute_pipeline(struct token *pipe_commands[],
 		putchar('\n');
 	}
 #endif
-	struct redirections redirections[ncommands];
-	bool async = false;
-	memset(redirections, 0, sizeof(redirections));
+	memset(redirs, 0, sizeof(redirs));
 	for (i = 0; i < ncommands; i++) {
-		ret = verify_command(pipe_commands[i], &redirections[i],
-				     &async, (i == ncommands - 1));
+		ret = verify_command(pipe_commands[i],
+				     (i == ncommands - 1),
+				     &async, 
+				     &command_nargs[i],
+				     &redirs[i]);
 		if (ret)
 			return ret;
 	}
-	return 0;
+
+	/* open pipes */
+	for (npipes = 0; npipes < ncommands - 1; npipes++) {
+		if (pipe(pipe_fds[npipes])) {
+			mysh_error_with_errno("can't create pipe fds");
+			ret = -1;
+			goto out_close_pipes;
+		}
+	}
+
+	/* open redirection files */
+	for (i = 0; i < ncommands; i++) {
+		if (redirs[i].stdin_filename != NULL) {
+			redirs[i].stdin_fd = open(redirs[i].stdin_filename, O_RDONLY);
+			if (redirs[i].stdin_fd <= 0) {
+				mysh_error_with_errno("can't open %s for reading",
+						      redirs[i].stdin_filename);
+				ret = -1;
+				goto out_close_redirection_files;
+			}
+		}
+		if (redirs[i].stdout_filename != NULL) {
+			redirs[i].stdout_fd = open(redirs[i].stdout_filename, O_WRONLY);
+			if (redirs[i].stdout_fd <= 0) {
+				mysh_error_with_errno("can't open %s for writing",
+						      redirs[i].stdout_filename);
+				ret = -1;
+				goto out_close_redirection_files;
+			}
+		}
+	}
+
+	/* execute the commands */
+	for (nchildren = 0; nchildren < ncommands; nchildren++) {
+		ret = fork();
+		if (ret == -1) {
+			/* fork() error */
+			mysh_error_with_errno("can't fork child process");
+			goto out_wait_children;
+		} else if (ret == 0) {
+			/* child */
+			int new_stdout_fd = -1;
+			int new_stdin_fd = -1;
+			if (nchildren != ncommands - 1) {
+				/* not last in pipeline: stdout may be pipe */
+				new_stdout_fd = pipe_fds[nchildren][1];
+			}
+			if (nchildren != 0) {
+				/* not first in pipeline: stdin may be pipe */
+				new_stdin_fd = pipe_fds[nchildren - 1][0];
+			}
+			/* overwrite pipes with redirections */
+			if (redirs[nchildren].stdin_fd > 0)
+				new_stdin_fd = redirs[nchildren].stdin_fd;
+			if (redirs[nchildren].stdout_fd > 0)
+				new_stdout_fd = redirs[nchildren].stdout_fd;
+			if (new_stdin_fd > 0) {
+				if (dup2(new_stdin_fd, 0) < 0) {
+					mysh_error_with_errno("Failed to duplicate stdin "
+							      "file descriptor");
+					exit(-1);
+				}
+			}
+			if (new_stdout_fd > 0) {
+				if (dup2(new_stdout_fd, 1) < 0) {
+					mysh_error_with_errno("Failed to duplicate stdout "
+							      "file descriptor");
+					exit(-1);
+				}
+			}
+
+			char *argv[command_nargs[nchildren]];
+			struct token *tok = pipe_commands[nchildren];
+			i = 0;
+			argv[0] = tok->tok_data;
+			for (tok = tok->next; 
+			     tok != NULL && (tok->type & TOK_CLASS_STRING);
+			     tok = tok->next)
+			{
+				argv[++i] = tok->tok_data;
+			}
+			execvp(argv[0], argv);
+			mysh_error_with_errno("Failed to execute %s", argv[0]);
+			exit(-1);
+		} else {
+			child_pids[nchildren] = ret;
+			/* parent */
+		}
+	}
+
+	ret = 0;
+out_wait_children:
+	for (i = 0; i < nchildren; i++) {
+		int status;
+		if (waitpid(child_pids[i], &status, 0) == -1) {
+			if (ret == 0)
+				ret = -1;
+			mysh_error_with_errno("Failed to wait for child with "
+					      "pid %d to terminate", child_pids[i]);
+		}
+		if (WIFEXITED(status)) {
+			if (ret == 0)
+				ret = WEXITSTATUS(status);
+		} else {
+			mysh_error("Child process with pid %d was abnormally "
+				   "terminated", child_pids[i]);
+			if (ret == 0)
+				ret = -1;
+		}
+	}
+out_close_redirection_files:
+	for (i = 0; i < ncommands; i++) {
+		if (redirs[i].stdin_fd > 0)
+			close(redirs[i].stdin_fd);
+		if (redirs[i].stdout_fd > 0)
+			close(redirs[i].stdout_fd);
+	}
+out_close_pipes:
+	for (i = 0; i < npipes; i++) {
+		close(pipe_fds[i][0]);
+		close(pipe_fds[i][1]);
+	}
+	return ret;
 }
 
 /* Execute a line of input that has been parsed into tokens */
