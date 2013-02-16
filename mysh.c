@@ -59,7 +59,7 @@
 #include <string.h>
 
 #define SHELL_NAME "mysh"
-/*#define DEBUG 1*/
+#define DEBUG 1
 
 #ifdef DEBUG
 #define MYSH_DEBUG(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
@@ -311,11 +311,24 @@ static struct token *next_token(const char **pp)
 	tok->type = type;
 	/* tok_data defaults to NULL if not explicitly set for a string token */
 	tok->tok_data = tok_data;
+	tok->next = NULL;
 
 	/* return the token and the pointer to the next unparsed character */
 	*pp = p;
 	return tok;
 }
+
+static void free_tok_list(struct token *tok)
+{
+	struct token *prev;
+	while (tok) {
+		prev = tok;
+		tok = tok->next;
+		free(prev->tok_data);
+		free(prev);
+	}
+}
+
 
 struct redirections {
 	const char *stdin_filename;
@@ -333,14 +346,14 @@ static int verify_command(const struct token *tok,
 			  unsigned *nargs_ret,
 			  struct redirections *redirs_ret)
 {
-	unsigned nargs = 0;
 	if (!(tok->type & TOK_CLASS_STRING)) {
 		mysh_error("expected string as first token of command");
 		return -1;
 	}
+	*nargs_ret = 0;
 	do {
 		tok = tok->next;
-		nargs++;
+		++*nargs_ret;
 		if (!tok)
 			return 0;
 	} while (tok->type & TOK_CLASS_STRING);
@@ -376,13 +389,13 @@ static int verify_command(const struct token *tok,
 	return 0;
 }
 
-static int start_child(const struct token * const command_toks,
-		       const struct redirections * const redirs,
-		       const unsigned cmd_nargs,
-		       const unsigned pipeline_cmd_idx,
-		       const unsigned pipeline_ncommands,
-		       const int pipe_fds[2],
-		       const int prev_read_end)
+static void start_child(const struct token * const command_toks,
+			const struct redirections * const redirs,
+			const unsigned cmd_nargs,
+			const unsigned pipeline_cmd_idx,
+			const unsigned pipeline_ncommands,
+			const int pipe_fds[2],
+			const int prev_read_end)
 {
 	int new_stdout_fd = -1;
 	int new_stdin_fd = -1;
@@ -429,7 +442,6 @@ static int start_child(const struct token * const command_toks,
 		else
 			close(pipe_fds[1]);
 	}
-
 	if (new_stdin_fd >= 0) {
 		if (dup2(new_stdin_fd, 0) < 0) {
 			mysh_error_with_errno("Failed to duplicate stdin "
@@ -462,7 +474,7 @@ static int start_child(const struct token * const command_toks,
 	exit(-1);
 }
 
-static int execute_pipeline(struct token *pipe_commands[],
+static int execute_pipeline(struct token **pipe_commands,
 			    unsigned int ncommands)
 {
 	unsigned i;
@@ -478,7 +490,7 @@ static int execute_pipeline(struct token *pipe_commands[],
 #ifdef DEBUG
 	printf("executing pipeline containing %u commands\n", ncommands);
 	for (i = 0; i < ncommands; i++) {
-		struct token *tok;
+		const struct token *tok;
 		printf("command %u: ", i);
 		for (tok = pipe_commands[i]; tok; tok = tok->next) {
 			switch (tok->type) {
@@ -591,52 +603,63 @@ out_close_pipes:
 	return ret;
 }
 
-/* Execute a line of input that has been parsed into tokens */
+/* Execute a line of input that has been parsed into tokens.
+ * Also is responsible for freeing the tokens. */
 static int execute_tok_list(struct token *tok_list)
 {
-	struct token *tok, *prev;
+	struct token *tok, *prev, *next;
 	unsigned ncommands;
 	unsigned cmd_idx;
+	unsigned i;
 	bool cmd_boundary;
-
+	int ret;
 
 	tok = tok_list;
-	if (tok->type == TOK_EOL) /* empty line */
+	if (tok->type == TOK_EOL) { /* empty line */
+		free(tok);
 		return 0;
+	}
 
 	/* split the tokens into individual lists (commands), around the '|'
 	 * signs. */
-	ncommands = 1;
+	ncommands = 0;
 	do {
-		if (tok->type == TOK_PIPE)
+		if (tok->type & TOK_CLASS_CMD_BOUNDARY)
 			ncommands++;
 		tok = tok->next;
-	} while (tok->type != TOK_EOL);
+	} while (tok);
 
 	struct token *commands[ncommands];
 
 	cmd_idx = 0;
 	cmd_boundary = true;
-	for (tok = tok_list, prev = NULL;
-	     ;
-	     prev = tok, tok = tok->next)
-	{
+	tok = tok_list;
+	do {
+		next = tok->next;
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
+			free(tok);
 			if (cmd_boundary) {
 				mysh_error("empty command in pipeline");
-				return -1;
+				free_tok_list(next);
+				ret = -1;
+				goto out;
+			} else {
+				prev->next = NULL;
+				cmd_boundary = true;
 			}
-			prev->next = NULL;
-			if (tok->type == TOK_EOL)
-				break;
-			cmd_boundary = true;
 		} else if (cmd_boundary) {
 			/* begin token list for next command */
 			commands[cmd_idx++] = tok;
 			cmd_boundary = false;
 		}
-	}
-	return execute_pipeline(commands, cmd_idx);
+		prev = tok;
+		tok = next;
+	} while (tok);
+	ret = execute_pipeline(commands, cmd_idx);
+out:
+	for (i = 0; i < cmd_idx; i++)
+		free_tok_list(commands[i]);
+	return ret;
 }
 
 /* Execute a line of input to the shell.  On parse error, returns -1.  On memory
@@ -650,8 +673,10 @@ static int execute_line(const char *line)
 	struct token *tok, *tok_list = NULL, *tok_list_tail = NULL;
 	do {
 		tok = next_token(&line);
-		if (!tok) /* parse error */
+		if (!tok) { /* parse error */
+			free_tok_list(tok_list);
 			return -1;
+		}
 		if (tok_list_tail)
 			tok_list_tail->next = tok;
 		else
@@ -683,9 +708,9 @@ int main(int argc, char **argv)
 	argv += optind;
 
 	if (argc) {
-		in = fopen(argv[1], "rb");
+		in = fopen(argv[0], "rb");
 		if (!in) {
-			mysh_error("can't open %s: %s", strerror(errno));
+			mysh_error("can't open %s: %s", argv[0], strerror(errno));
 			exit(1);
 		}
 	} else
@@ -703,7 +728,7 @@ int main(int argc, char **argv)
 
 	if (ferror(in)) {
 		mysh_error("error reading from %s: %s",
-			   (argc == 0 ? "stdin" : argv[1]), strerror(errno));
+			   (argc == 0 ? "stdin" : argv[0]), strerror(errno));
 		status = 1;
 	}
 	fclose(in);

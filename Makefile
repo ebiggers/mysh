@@ -1,2 +1,3 @@
-CFLAGS := -O2 -Wall -g
+CC := clang
+CFLAGS := -O0 -Wall -g
 mysh:mysh.c
