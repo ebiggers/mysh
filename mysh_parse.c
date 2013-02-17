@@ -1,3 +1,10 @@
+/*
+ * mysh_parse.c
+ *
+ * Code to parse a line of shell input into tokens (represented by `struct
+ * token's)
+ */
+
 #include "mysh.h"
 #include <sys/types.h>
 #include <string.h>

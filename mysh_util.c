@@ -1,9 +1,17 @@
+/*
+ * mysh_util.c
+ *
+ * Miscellaneous functions
+ */
+
 #include "mysh.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
+#define SHELL_NAME "mysh"
 
 void mysh_error(const char *fmt, ...)
 {

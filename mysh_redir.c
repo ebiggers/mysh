@@ -1,3 +1,9 @@
+/*
+ * mysh_redir.c
+ *
+ * Handles command redirections
+ */
+
 #include "mysh.h"
 #include <unistd.h>
 #include <fcntl.h>
