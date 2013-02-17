@@ -67,6 +67,8 @@
 #define MYSH_DEBUG(fmt, ...)
 #endif
 
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
 static void mysh_error(const char *fmt, ...)
 {
 	va_list va;
@@ -160,6 +162,7 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 		} else if (c == '"' && !escape) {
 			/* found terminating double-quote */
 			break;
+	#if 0
 		} else if (c == '$' && !escape) {
 			mysh_error("found '$' in double-quoted string, "
 				   "but variable expansion is not supported");
@@ -168,8 +171,14 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 			mysh_error("found '`' in double-quoted string, "
 				   "but command expansion is not supported");
 			return -1;
+	#endif
 		} else {
-			if (escape && c != '$' && c != '`' && c != '\\' && c != '"') {
+			if (
+			    escape &&
+			#if 0
+			    c != '$' && c != '`' &&
+			#endif
+			    c != '\\' && c != '"') {
 				/* backslash followed by a character that does
 				 * not give backslash a special meaning */
 				if (out_buf)
@@ -188,19 +197,20 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 	return len;
 }
 
-static unsigned char is_special[256] = {
-	[ '\\'] = 1,
-	[ '\''] = 1,
-	[ '"']  = 1,
-	[ '&']  = 1,
-	[ '#']  = 1,
-	[ '|']  = 1,
-	[ '>']  = 1,
-	[ '<']  = 1,
-	[ ' ']  = 1,
-	[ '\t'] = 1,
-	[ '\n'] = 1,
-	[ '\r'] = 1,
+static const unsigned char is_special[256] = {
+	['\0'] = 1,
+	['\\'] = 1,
+	['\''] = 1,
+	['"']  = 1,
+	['&']  = 1,
+	['#']  = 1,
+	['|']  = 1,
+	['>']  = 1,
+	['<']  = 1,
+	[' ']  = 1,
+	['\t'] = 1,
+	['\n'] = 1,
+	['\r'] = 1,
 };
 
 static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
@@ -208,13 +218,17 @@ static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
 	const char *p;
 	ssize_t len = 0;
 	bool escape = false;
-	for (p = *pp; *p; p++) {
-		if (is_special[(unsigned char)*p] && !escape) {
-			if (*p == '\\') {
-				escape = true;
-				continue;
-			} else
+	for (p = *pp; ; p++) {
+		if (is_special[(unsigned char)*p]) {
+			if (*p == '\0')
 				break;
+			if (!escape) {
+				if (*p == '\\') {
+					escape = true;
+					continue;
+				} else
+					break;
+			}
 		}
 		if (out_buf)
 			*out_buf++ = *p;
@@ -240,7 +254,7 @@ static char *parse_string(const char **pp, scan_string_t scan_string)
 	/* get string length */
 	p = *pp;
 	len = scan_string(&p, NULL);
-	if (len == -1)
+	if (len < 0)
 		return NULL; /* parse error */
 	buf = xmalloc(len + 1);
 	/* get the string */
@@ -320,12 +334,12 @@ static struct token *next_token(const char **pp)
 
 static void free_tok_list(struct token *tok)
 {
-	struct token *prev;
+	struct token *next;
 	while (tok) {
-		prev = tok;
-		tok = tok->next;
-		free(prev->tok_data);
-		free(prev);
+		next = tok->next;
+		free(tok->tok_data);
+		free(tok);
+		tok = next;
 	}
 }
 
@@ -389,6 +403,8 @@ static int verify_command(const struct token *tok,
 	return 0;
 }
 
+/* Executed by the child process after a fork().  The child now must set up
+ * redirections of stdin and stdout (if any) and execute the new program. */
 static void start_child(const struct token * const command_toks,
 			const struct redirections * const redirs,
 			const unsigned cmd_nargs,
@@ -422,9 +438,9 @@ static void start_child(const struct token * const command_toks,
 	}
 
 	if (pipeline_cmd_idx != 0) {
-		/* not the first command in the pipeline:
-		 * assign read end of pipe, or close it if it's
-		 * not being used */
+		/* Not the first command in the pipeline:
+		 * assign read end of pipe to stdin, or close it if it's not
+		 * being used */
 		if (new_stdin_fd < 0)
 			new_stdin_fd = prev_read_end;
 		else
@@ -432,10 +448,9 @@ static void start_child(const struct token * const command_toks,
 	}
 
 	if (pipeline_cmd_idx != pipeline_ncommands - 1) {
-		/* not the last command in the pipeline: close
-		 * read end of pipe we are writing to, then
-		 * assign write end of pipe, or close it if it's
-		 * not being used */
+		/* Not the last command in the pipeline: close read end of pipe
+		 * we are writing to, then assign write end of pipe to stdout,
+		 * or close it if it's not being used */
 		close(pipe_fds[0]);
 		if (new_stdout_fd < 0)
 			new_stdout_fd = pipe_fds[1];
@@ -443,7 +458,8 @@ static void start_child(const struct token * const command_toks,
 			close(pipe_fds[1]);
 	}
 	if (new_stdin_fd >= 0) {
-		if (dup2(new_stdin_fd, 0) < 0) {
+		MYSH_DEBUG("dup %d to stdin\n", new_stdin_fd);
+		if (dup2(new_stdin_fd, STDIN_FILENO) < 0) {
 			mysh_error_with_errno("Failed to duplicate stdin "
 					      "file descriptor");
 			exit(-1);
@@ -451,7 +467,8 @@ static void start_child(const struct token * const command_toks,
 		close(new_stdin_fd);
 	}
 	if (new_stdout_fd >= 0) {
-		if (dup2(new_stdout_fd, 1) < 0) {
+		MYSH_DEBUG("dup %d to stdout\n", new_stdout_fd);
+		if (dup2(new_stdout_fd, STDOUT_FILENO) < 0) {
 			mysh_error_with_errno("Failed to duplicate stdout "
 					      "file descriptor");
 			exit(-1);
@@ -459,23 +476,66 @@ static void start_child(const struct token * const command_toks,
 		close(new_stdout_fd);
 	}
 
-	i = 0;
 	tok = command_toks;
-	argv[i++] = tok->tok_data;
-	for (tok = tok->next; 
-	     tok != NULL && (tok->type & TOK_CLASS_STRING);
-	     tok = tok->next)
-	{
-		argv[i++] = tok->tok_data;
-	}
+	for (i = 0; i < cmd_nargs; i++, tok = tok->next)
+		argv[i] = tok->tok_data;
 	argv[i] = NULL;
 	execvp(argv[0], argv);
 	mysh_error_with_errno("Failed to execute %s", argv[0]);
 	exit(-1);
 }
 
-static int execute_pipeline(struct token **pipe_commands,
-			    unsigned int ncommands)
+struct builtin {
+	const char *name;
+};
+
+static const struct builtin builtins[] = {
+	{"pwd"},
+	{"cd"},
+	{"setenv"},
+	{"getenv"},
+	{"exit"},
+};
+
+#define NUM_BUILTINS ARRAY_SIZE(builtins)
+
+#define for_builtin(b) \
+		for (b = builtins; b != builtins + NUM_BUILTINS; b++)
+
+static bool execute_builtin(const struct token *command_toks,
+			    const struct redirections *redirs,
+			    const unsigned command_nargs,
+			    int *status_ret)
+{
+	const struct builtin *b;
+	const char *name = command_toks->tok_data;
+	int orig_stdout;
+	int orig_stdin;
+	int new_stdout;
+	int new_stdin;
+	int status = -1;
+
+	for_builtin(b)
+		if (strcmp(b->name, name) == 0)
+			goto found_builtin;
+	/* not a builtin command */
+	return false;
+found_builtin:
+	if (redirs->stdout_filename) {
+		orig_stdout = dup(STDOUT_FILENO);
+		if (orig_stdout < 0) {
+			mysh_error_with_errno("can't duplicate stdin file descriptor");
+			goto out;
+		}
+		new_stdout = open(redirs->stdout_filename
+	}
+out:
+	*status_ret = status;
+	return true;
+}
+
+static int execute_pipeline(const struct token * const *pipe_commands,
+			    unsigned ncommands)
 {
 	unsigned i;
 	unsigned cmd_idx;
@@ -485,7 +545,7 @@ static int execute_pipeline(struct token **pipe_commands,
 	int prev_read_end;
 	unsigned command_nargs[ncommands];
 	pid_t child_pids[ncommands];
-	bool async = false;
+	bool async;
 
 #ifdef DEBUG
 	printf("executing pipeline containing %u commands\n", ncommands);
@@ -526,6 +586,7 @@ static int execute_pipeline(struct token **pipe_commands,
 	}
 #endif
 	memset(redirs, 0, sizeof(redirs));
+	async = false;
 	for (i = 0; i < ncommands; i++) {
 		ret = verify_command(pipe_commands[i],
 				     (i == ncommands - 1),
@@ -536,47 +597,63 @@ static int execute_pipeline(struct token **pipe_commands,
 			return ret;
 	}
 
-	/* execute the commands */
+	/* If the pipeline only has one command and is not being executed
+	 * asynchronously, try interpreting the command as a builtin. */
+	if (ncommands == 1 || !async) {
+		if (execute_builtin(pipe_commands[0], &redirs[0],
+				    &command_nargs[0], &ret))
+		    return ret;
+		/* not a builtin */
+	}
+
+	/* Execute the commands */
 	prev_read_end = pipe_fds[0] = pipe_fds[1] = -1;
 	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
-		/* create any new pipes needed */
-		if (prev_read_end != -1)
+
+		/* Close any pipes we created that are no longer needed; also
+		 * save the read end of the previous pipe (if any) in the
+		 * prev_read_end variable.  */
+		if (prev_read_end >= 0)
 			close(prev_read_end);
 		prev_read_end = pipe_fds[0];
 		pipe_fds[0] = -1;
-		if (pipe_fds[1] != -1) {
+		if (pipe_fds[1] >= 0) {
 			close(pipe_fds[1]);
 			pipe_fds[1] = -1;
 		}
+
+		/* Unless this is the last command, create a new pair of pipes */
 		if (cmd_idx != ncommands - 1) {
-			MYSH_DEBUG("Created pipe\n");
 			if (pipe(pipe_fds)) {
 				mysh_error_with_errno("can't create pipes");
 				goto out_close_pipes;
 			}
+			MYSH_DEBUG("Created pipe\n");
 		}
+
+		/* Fork the process */
 		ret = fork();
-		if (ret == -1) {
+		if (ret < 0) {
 			/* fork() error */
 			mysh_error_with_errno("can't fork child process");
 			goto out_close_pipes;
 		} else if (ret == 0) {
-			/* child: set up file descriptors and execute process */
+			/* Child: set up file descriptors and execute new process */
 			start_child(pipe_commands[cmd_idx], &redirs[cmd_idx],
 				    command_nargs[cmd_idx], cmd_idx, ncommands,
 				    pipe_fds, prev_read_end);
 		} else {
-			/* parent: save child pid */
+			/* Parent: save child pid in an array */
 			child_pids[cmd_idx] = ret;
 		}
 	}
 	ret = 0;
 out_close_pipes:
-	if (pipe_fds[0] != -1)
+	if (pipe_fds[0] >= 0)
 		close(pipe_fds[0]);
-	if (pipe_fds[1] != -1)
+	if (pipe_fds[1] >= 0)
 		close(pipe_fds[1]);
-	if (prev_read_end != -1)
+	if (prev_read_end >= 0)
 		close(prev_read_end);
 	if (ret == 0 && !async) {
 		for (i = 0; i < cmd_idx; i++) {
@@ -655,7 +732,7 @@ static int execute_tok_list(struct token *tok_list)
 		prev = tok;
 		tok = next;
 	} while (tok);
-	ret = execute_pipeline(commands, cmd_idx);
+	ret = execute_pipeline((const struct token**)commands, cmd_idx);
 out:
 	for (i = 0; i < cmd_idx; i++)
 		free_tok_list(commands[i]);
