@@ -60,13 +60,6 @@
 
 #define SHELL_NAME "mysh"
 
-/*#define DEBUG*/
-#ifdef DEBUG
-#define MYSH_DEBUG(fmt, ...) fprintf(stderr, fmt, ## __VA_ARGS__)
-#else
-#define MYSH_DEBUG(fmt, ...)
-#endif
-
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 #define ZERO_ARRAY(A) memset(A, 0, sizeof(A))
 
@@ -649,44 +642,6 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 	pid_t child_pids[ncommands];
 	bool async;
 
-#ifdef DEBUG
-	printf("executing pipeline containing %u commands\n", ncommands);
-	for (i = 0; i < ncommands; i++) {
-		const struct token *tok;
-		printf("command %u: ", i);
-		for (tok = pipe_commands[i]; tok; tok = tok->next) {
-			switch (tok->type) {
-			case TOK_UNQUOTED_STRING:
-				printf("TOK_UNQUOTED_STRING(%s) ", tok->tok_data);
-				break;
-			case TOK_SINGLE_QUOTED_STRING:
-				printf("TOK_SINGLE_QUOTED_STRING(%s) ", tok->tok_data);
-				break;
-			case TOK_DOUBLE_QUOTED_STRING:
-				printf("TOK_DOUBLE_QUOTED_STRING(%s) ", tok->tok_data);
-				break;
-			case TOK_AMPERSAND:
-				printf("TOK_AMPERSAND ");
-				break;
-			case TOK_STDIN_REDIRECTION:
-				printf("TOK_STDIN_REDIRECTION ");
-				break;
-			case TOK_STDOUT_REDIRECTION:
-				printf("TOK_STDOUT_REDIRECTION ");
-				break;
-			case TOK_EOL:
-				printf("TOK_EOL ");
-				break;
-			case TOK_PIPE:
-				printf("TOK_PIPE ");
-				break;
-			default:
-				assert(0);
-			}
-		}
-		putchar('\n');
-	}
-#endif
 	ZERO_ARRAY(redirs);
 	async = false;
 	for (i = 0; i < ncommands; i++) {
@@ -730,7 +685,6 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 				mysh_error_with_errno("can't create pipes");
 				goto out_close_pipes;
 			}
-			MYSH_DEBUG("Created pipe\n");
 		}
 
 		/* Fork the process */
@@ -760,8 +714,6 @@ out_close_pipes:
 	if (ret == 0 && !async) {
 		for (i = 0; i < cmd_idx; i++) {
 			int status;
-			MYSH_DEBUG("Wait for pid %d\n", child_pids[i]);
-			/*if (wait(&status) == -1) {*/
 			if (waitpid(child_pids[i], &status, 0) == -1) {
 				if (ret == 0)
 					ret = -1;
