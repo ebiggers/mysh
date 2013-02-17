@@ -68,6 +68,7 @@
 #endif
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+#define ZERO_ARRAY(A) memset(A, 0, sizeof(A))
 
 static void mysh_error(const char *fmt, ...)
 {
@@ -343,11 +344,79 @@ static void free_tok_list(struct token *tok)
 	}
 }
 
-
-struct redirections {
-	const char *stdin_filename;
-	const char *stdout_filename;
+struct orig_fds {
+	int orig_stdin;
+	int orig_stdout;
 };
+
+static int undo_redirections(const struct orig_fds *orig)
+{
+	int ret = true;
+	if (orig->orig_stdin >= 0)
+		if (dup2(orig->orig_stdin, STDIN_FILENO) < 0)
+			ret = -1;
+	if (orig->orig_stdout >= 0)
+		if (dup2(orig->orig_stdout, STDOUT_FILENO) < 0)
+			ret = -1;
+	return ret;
+}
+
+/* Apply the redirections in the token list @redirs.  If @orig is non-NULL, save
+ * the original file descriptors in there.  Return %true on success, %false on
+ * failure. */
+static int do_redirections(const struct token *redirs, struct orig_fds *orig)
+{
+	while (redirs && (redirs->type & TOK_CLASS_REDIRECTION)) {
+		int open_flags;
+		int dest_fd;
+		int *orig_fd_p = NULL;
+		int ret;
+		int fd;
+		const char *filename;
+
+		if (redirs->type == TOK_STDIN_REDIRECTION) {
+			open_flags = O_RDONLY;
+			dest_fd = STDIN_FILENO;
+			if (orig)
+				orig_fd_p = &orig->orig_stdin;
+		} else {
+			open_flags = O_WRONLY | O_TRUNC | O_CREAT;
+			dest_fd = STDOUT_FILENO;
+			if (orig)
+				orig_fd_p = &orig->orig_stdout;
+		}
+
+		if (orig_fd_p != NULL && *orig_fd_p < 0) {
+			*orig_fd_p = dup(dest_fd);
+			if (*orig_fd_p < 0) {
+				mysh_error_with_errno("Failed to duplicate "
+						      "file descriptor %d", dest_fd);
+				goto out_undo_redirections;
+			}
+		}
+
+		redirs = redirs->next;
+		filename = redirs->tok_data;
+		redirs = redirs->next;
+		fd = open(filename, open_flags, 0666);
+		if (fd < 0) {
+			mysh_error_with_errno("can't open %s", filename);
+			goto out_undo_redirections;
+		}
+		ret = dup2(fd, dest_fd);
+		close(fd);
+		if (ret < 0) {
+			mysh_error_with_errno("can't perform redirection to or from %s",
+					      filename);
+			goto out_undo_redirections;
+		}
+	}
+	return 0;
+out_undo_redirections:
+	if (orig)
+		(void)undo_redirections(orig);
+	return -1;
+}
 
 /* command -> string args redirections
  * args -> e | args string
@@ -358,7 +427,7 @@ static int verify_command(const struct token *tok,
 			  const bool is_last,
 			  bool *async_ret,
 			  unsigned *nargs_ret,
-			  struct redirections *redirs_ret)
+			  const struct token **redirs_ret)
 {
 	if (!(tok->type & TOK_CLASS_STRING)) {
 		mysh_error("expected string as first token of command");
@@ -373,21 +442,13 @@ static int verify_command(const struct token *tok,
 	} while (tok->type & TOK_CLASS_STRING);
 
 	while (tok->type & TOK_CLASS_REDIRECTION) {
-		const char **filename_p;
+		if (!*redirs_ret)
+			*redirs_ret = tok;
 		if (!tok->next || !(tok->next->type & TOK_CLASS_STRING)) {
 			mysh_error("expected filename after redirection operator");
 			return -1;
 		}
-		if (tok->type == TOK_STDIN_REDIRECTION)
-			filename_p = &redirs_ret->stdin_filename;
-		else
-			filename_p = &redirs_ret->stdout_filename;
-		if (*filename_p) {
-			mysh_error("found multiple redirections for same stream");
-			return -1;
-		}
 		tok = tok->next;
-		*filename_p = tok->tok_data;
 		tok = tok->next;
 		if (!tok)
 			return 0;
@@ -406,82 +467,57 @@ static int verify_command(const struct token *tok,
 /* Executed by the child process after a fork().  The child now must set up
  * redirections of stdin and stdout (if any) and execute the new program. */
 static void start_child(const struct token * const command_toks,
-			const struct redirections * const redirs,
+			const struct token * const redirs,
 			const unsigned cmd_nargs,
 			const unsigned pipeline_cmd_idx,
 			const unsigned pipeline_ncommands,
 			const int pipe_fds[2],
 			const int prev_read_end)
 {
-	int new_stdout_fd = -1;
-	int new_stdin_fd = -1;
 	char *argv[cmd_nargs + 1];
 	const struct token *tok;
 	unsigned i;
 
-	if (redirs->stdin_filename != NULL) {
-		new_stdin_fd = open(redirs->stdin_filename, O_RDONLY);
-		if (new_stdin_fd < 0) {
-			mysh_error_with_errno("can't open %s for reading",
-					      redirs->stdin_filename);
-			exit(-1);
-		}
-	}
-	if (redirs->stdout_filename != NULL) {
-		new_stdout_fd = open(redirs->stdout_filename,
-				     O_WRONLY | O_CREAT | O_TRUNC, 0666);
-		if (new_stdout_fd < 0) {
-			mysh_error_with_errno("can't open %s for writing",
-					      redirs->stdout_filename);
-			exit(-1);
+	/* Set up stdin and stdout for this component of the pipeline */
+
+	if (pipeline_cmd_idx != pipeline_ncommands - 1) {
+		/* Not the last command in the pipeline; close the read end of
+		 * pipe we are writing to, then assign the write end of the pipe
+		 * to stdout */
+		close(pipe_fds[0]);
+		if (dup2(pipe_fds[1], STDOUT_FILENO) < 0) {
+			mysh_error_with_errno("Failed to set up stdout "
+					      "for pipeline");
+			goto fail;
 		}
 	}
 
 	if (pipeline_cmd_idx != 0) {
-		/* Not the first command in the pipeline:
-		 * assign read end of pipe to stdin, or close it if it's not
-		 * being used */
-		if (new_stdin_fd < 0)
-			new_stdin_fd = prev_read_end;
-		else
-			close(prev_read_end);
+		/* Not the first command in the pipeline; assign the read end of
+		 * the previous pipe to stdin. */
+		if (dup2(prev_read_end, STDIN_FILENO) < 0) {
+			mysh_error_with_errno("Failed to set up stdin "
+					      "for pipeline");
+			goto fail;
+		}
 	}
 
-	if (pipeline_cmd_idx != pipeline_ncommands - 1) {
-		/* Not the last command in the pipeline: close read end of pipe
-		 * we are writing to, then assign write end of pipe to stdout,
-		 * or close it if it's not being used */
-		close(pipe_fds[0]);
-		if (new_stdout_fd < 0)
-			new_stdout_fd = pipe_fds[1];
-		else
-			close(pipe_fds[1]);
-	}
-	if (new_stdin_fd >= 0) {
-		MYSH_DEBUG("dup %d to stdin\n", new_stdin_fd);
-		if (dup2(new_stdin_fd, STDIN_FILENO) < 0) {
-			mysh_error_with_errno("Failed to duplicate stdin "
-					      "file descriptor");
-			exit(-1);
-		}
-		close(new_stdin_fd);
-	}
-	if (new_stdout_fd >= 0) {
-		MYSH_DEBUG("dup %d to stdout\n", new_stdout_fd);
-		if (dup2(new_stdout_fd, STDOUT_FILENO) < 0) {
-			mysh_error_with_errno("Failed to duplicate stdout "
-					      "file descriptor");
-			exit(-1);
-		}
-		close(new_stdout_fd);
-	}
+	/* Apply other redirections */
+	if (do_redirections(redirs, NULL) != 0)
+		goto fail;
 
+	/* Set up argv */
 	tok = command_toks;
 	for (i = 0; i < cmd_nargs; i++, tok = tok->next)
 		argv[i] = tok->tok_data;
 	argv[i] = NULL;
+
+	/* Execute the new program */
 	execvp(argv[0], argv);
+
+	/* Control only reaches here if execvp() failed */
 	mysh_error_with_errno("Failed to execute %s", argv[0]);
+fail:
 	exit(-1);
 }
 
@@ -502,6 +538,7 @@ static const struct builtin builtins[] = {
 #define for_builtin(b) \
 		for (b = builtins; b != builtins + NUM_BUILTINS; b++)
 
+#if 0
 static bool execute_builtin(const struct token *command_toks,
 			    const struct redirections *redirs,
 			    const unsigned command_nargs,
@@ -509,10 +546,6 @@ static bool execute_builtin(const struct token *command_toks,
 {
 	const struct builtin *b;
 	const char *name = command_toks->tok_data;
-	int orig_stdout;
-	int orig_stdin;
-	int new_stdout;
-	int new_stdin;
 	int status = -1;
 
 	for_builtin(b)
@@ -521,18 +554,10 @@ static bool execute_builtin(const struct token *command_toks,
 	/* not a builtin command */
 	return false;
 found_builtin:
-	if (redirs->stdout_filename) {
-		orig_stdout = dup(STDOUT_FILENO);
-		if (orig_stdout < 0) {
-			mysh_error_with_errno("can't duplicate stdin file descriptor");
-			goto out;
-		}
-		new_stdout = open(redirs->stdout_filename
-	}
-out:
 	*status_ret = status;
 	return true;
 }
+#endif
 
 static int execute_pipeline(const struct token * const *pipe_commands,
 			    unsigned ncommands)
@@ -540,7 +565,7 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 	unsigned i;
 	unsigned cmd_idx;
 	int ret;
-	struct redirections redirs[ncommands];
+	struct token *redirs[ncommands];
 	int pipe_fds[2];
 	int prev_read_end;
 	unsigned command_nargs[ncommands];
@@ -585,26 +610,28 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 		putchar('\n');
 	}
 #endif
-	memset(redirs, 0, sizeof(redirs));
+	ZERO_ARRAY(redirs);
 	async = false;
 	for (i = 0; i < ncommands; i++) {
 		ret = verify_command(pipe_commands[i],
 				     (i == ncommands - 1),
 				     &async, 
 				     &command_nargs[i],
-				     &redirs[i]);
+				     (const struct token**)&redirs[i]);
 		if (ret)
 			return ret;
 	}
 
 	/* If the pipeline only has one command and is not being executed
 	 * asynchronously, try interpreting the command as a builtin. */
+#if 0
 	if (ncommands == 1 || !async) {
 		if (execute_builtin(pipe_commands[0], &redirs[0],
-				    &command_nargs[0], &ret))
+				    command_nargs[0], &ret))
 		    return ret;
 		/* not a builtin */
 	}
+#endif
 
 	/* Execute the commands */
 	prev_read_end = pipe_fds[0] = pipe_fds[1] = -1;
@@ -639,7 +666,7 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 			goto out_close_pipes;
 		} else if (ret == 0) {
 			/* Child: set up file descriptors and execute new process */
-			start_child(pipe_commands[cmd_idx], &redirs[cmd_idx],
+			start_child(pipe_commands[cmd_idx], redirs[cmd_idx],
 				    command_nargs[cmd_idx], cmd_idx, ncommands,
 				    pipe_fds, prev_read_end);
 		} else {
