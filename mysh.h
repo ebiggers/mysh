@@ -4,8 +4,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#define SHELL_NAME "mysh"
-
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 #define ZERO_ARRAY(A) memset(A, 0, sizeof(A))
 
@@ -14,8 +12,8 @@ enum token_type {
 	TOK_SINGLE_QUOTED_STRING = 0x2,
 	TOK_DOUBLE_QUOTED_STRING = 0x4,
 	TOK_PIPE                 = 0x8,
-	TOK_STDIN_REDIRECTION    = 0x10,
-	TOK_STDOUT_REDIRECTION   = 0x20,
+	TOK_GREATER_THAN         = 0x10,
+	TOK_LESS_THAN            = 0x20,
 	TOK_AMPERSAND            = 0x40,
 	TOK_EOL                  = 0x80,
 };
@@ -25,12 +23,13 @@ enum token_type {
 		(TOK_UNQUOTED_STRING | TOK_SINGLE_QUOTED_STRING | TOK_DOUBLE_QUOTED_STRING)
 
 #define TOK_CLASS_REDIRECTION \
-		(TOK_STDIN_REDIRECTION | TOK_STDOUT_REDIRECTION)
+		(TOK_GREATER_THAN | TOK_LESS_THAN)
 
 #define TOK_CLASS_CMD_BOUNDARY \
 		(TOK_PIPE | TOK_EOL)
 
 struct token {
+	bool preceded_by_whitespace;
 	enum token_type type;
 	char *tok_data;
 	struct token *next;
@@ -49,7 +48,7 @@ extern void *xmalloc(size_t len);
 
 /* mysh_parse.c */
 extern void free_tok_list(struct token *tok);
-extern struct token *next_token(const char **pp);
+extern struct token *lex_next_token(const char **pp);
 
 /* mysh_redir.c */
 struct orig_fds {

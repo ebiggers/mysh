@@ -336,7 +336,7 @@ static int execute_line(const char *line)
 	 * execute_tok_list(). */
 	struct token *tok, *tok_list = NULL, *tok_list_tail = NULL;
 	do {
-		tok = next_token(&line);
+		tok = lex_next_token(&line);
 		if (!tok) { /* parse error */
 			free_tok_list(tok_list);
 			return -1;

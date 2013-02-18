@@ -1,8 +1,8 @@
 /*
- * mysh_parse.c
+ * mysh_lex.c
  *
- * Code to parse a line of shell input into tokens (represented by `struct
- * token's)
+ * Code for lexical analyzer to parse a line of shell input into tokens
+ * (represented by `struct token's)
  */
 
 #include "mysh.h"
@@ -129,7 +129,7 @@ typedef ssize_t (*scan_string_t)(const char **pp, char *out_buf);
  * @scan_string function).  Update *pp to point to the next character after the
  * end of the string.  Return value is the literal string in newly allocated
  * memory, or NULL on parse error.  */
-static char *parse_string(const char **pp, scan_string_t scan_string)
+static char *lex_string(const char **pp, scan_string_t scan_string)
 {
 	ssize_t len;
 	char *buf;
@@ -149,16 +149,19 @@ static char *parse_string(const char **pp, scan_string_t scan_string)
 
 /* Return the next token from the line pointed to by *pp, and update *pp to
  * point to the next unparsed part of the line.  Returns NULL on parse error. */
-struct token *next_token(const char **pp)
+struct token *lex_next_token(const char **pp)
 {
 	const char *p = *pp;
 	struct token *tok;
 	enum token_type type;
 	char *tok_data;
+	bool found_whitespace = false;
 
 	/* ignore whitespace between tokens */
-	while (isspace(*p))
+	while (isspace(*p)) {
+		found_whitespace = true;
 		p++;
+	}
 
 	/* Choose the token type based on the next character, then parse the
 	 * token. */
@@ -171,13 +174,13 @@ struct token *next_token(const char **pp)
 	case '\'':
 		type = TOK_SINGLE_QUOTED_STRING;
 		p++;
-		if (!(tok_data = parse_string(&p, scan_single_quoted_string)))
+		if (!(tok_data = lex_string(&p, scan_single_quoted_string)))
 			return NULL; /* parse error */
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
 		p++;
-		if (!(tok_data = parse_string(&p, scan_double_quoted_string)))
+		if (!(tok_data = lex_string(&p, scan_double_quoted_string)))
 			return NULL; /* parse error */
 		break;
 	case '|':
@@ -185,11 +188,11 @@ struct token *next_token(const char **pp)
 		p++;
 		break;
 	case '<':
-		type = TOK_STDIN_REDIRECTION;
+		type = TOK_GREATER_THAN;
 		p++;
 		break;
 	case '>':
-		type = TOK_STDOUT_REDIRECTION;
+		type = TOK_LESS_THAN;
 		p++;
 		break;
 	case '\0': /* real end-of-line */
@@ -200,12 +203,13 @@ struct token *next_token(const char **pp)
 		/* anything that didn't match one of the special characters is
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
-		if (!(tok_data = parse_string(&p, scan_unquoted_string)))
+		if (!(tok_data = lex_string(&p, scan_unquoted_string)))
 			return NULL; /* parse error */
 		break;
 	}
 	/* allocate and initialize the token */
 	tok = xmalloc(sizeof(struct token));
+	tok->preceded_by_whitespace = found_whitespace;
 	tok->type = type;
 	/* tok_data defaults to NULL if not explicitly set for a string token */
 	tok->tok_data = tok_data;

@@ -33,7 +33,7 @@ int do_redirections(const struct token *redirs, struct orig_fds *orig)
 		int fd;
 		const char *filename;
 
-		if (redirs->type == TOK_STDIN_REDIRECTION) {
+		if (redirs->type == TOK_GREATER_THAN) {
 			open_flags = O_RDONLY;
 			dest_fd = STDIN_FILENO;
 			if (orig)
