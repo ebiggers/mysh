@@ -158,16 +158,14 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 
 	mysh_assert(param_char_map != NULL);
 	mysh_assert(list_empty(out_list));
-
-	*trailing_whitespace = false;
 	if (!strpbrk(s->chars, whitespace_chars)) {
 		/* No whitespace in string. */
 		*leading_whitespace = false;
+		*trailing_whitespace = false;
 		if (s->len != 0)
 			list_add_tail(&s->list, out_list);
 		return;
 	}
-
 	chars = s->chars;
 	i = 0;
 	*leading_whitespace = isspace(chars[i] != 0) && param_char_map[i] != 0;
