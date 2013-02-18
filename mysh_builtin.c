@@ -13,7 +13,7 @@
 extern const char **environ;
 
 /* Print the working directory */
-static int builtin_pwd(int argc, const char **argv)
+static int builtin_pwd(unsigned argc, const char **argv)
 {
 	char *buf;
 	int ret = 1;
@@ -33,19 +33,19 @@ out:
 }
 
 /* Change the working directory */
-static int builtin_cd(int argc, const char **argv)
+static int builtin_cd(unsigned argc, const char **argv)
 {
 	int ret = 1;
 	const char *dest_dir;
 
-	if (argc < 2) {
+	if (argc) {
+		dest_dir = argv[0];
+	} else {
 		dest_dir = getenv("HOME");
 		if (!dest_dir) {
 			mysh_error("cd: HOME not set");
 			goto out;
 		}
-	} else {
-		dest_dir = argv[1];
 	}
 	if (chdir(dest_dir) != 0)
 		mysh_error_with_errno("cd: %s", dest_dir);
@@ -56,16 +56,16 @@ out:
 }
 
 /* Set the value of an environmental variable */
-static int builtin_setenv(int argc, const char **argv)
+static int builtin_setenv(unsigned argc, const char **argv)
 {
 	int ret;
-	if (argc != 3) {
+	if (argc < 2) {
 		mysh_error("usage: setenv VARIABLE VALUE");
 		ret = 2;
 		goto out;
 	}
-	if (setenv(argv[1], argv[2], 1) != 0) {
-		mysh_error_with_errno("setenv %s", argv[1]);
+	if (setenv(argv[0], argv[1], 1) != 0) {
+		mysh_error_with_errno("setenv %s", argv[0]);
 		ret = 1;
 	} else {
 		ret = 0;
@@ -75,10 +75,19 @@ out:
 }
 
 /* Print the value of an environmental variable */
-static int builtin_getenv(int argc, const char **argv)
+static int builtin_getenv(unsigned argc, const char **argv)
 {
 	int ret = 0;
-	if (argc < 2) {
+	if (argc) {
+		const char *value = getenv(argv[0]);
+		if (value) {
+			if (puts(value) == EOF) {
+				mysh_error_with_errno("getenv: write error");
+				ret = 1;
+			}
+		} else
+			ret = 2;
+	} else {
 		const char **env_p;
 		for (env_p = environ; *env_p; env_p++) {
 			if (puts(*env_p) == EOF) {
@@ -87,24 +96,22 @@ static int builtin_getenv(int argc, const char **argv)
 				break;
 			}
 		}
-	} else {
-		const char *value = getenv(argv[1]);
-		if (value) {
-			if (puts(value) == EOF) {
-				mysh_error_with_errno("getenv: write error");
-				ret = 1;
-			}
-		} else
-			ret = 2;
 	}
 	return ret;
 }
 
 /* Exit the shell */
-static int builtin_exit(int argc, const char **argv)
+static int builtin_exit(unsigned argc, const char **argv)
 {
-	exit((argc < 2) ? 0 : atoi(argv[1]));
+	exit((argc) ? atoi(argv[0]) : 0);
 }
+
+/* Dummy command */
+static int builtin_dummy(unsigned argc, const char **argv)
+{
+	return 0;
+}
+
 
 struct builtin {
 	/* Name of the command through which the builtin will be called */
@@ -113,7 +120,7 @@ struct builtin {
 	/* Function to execute the builtin command.  Note: for these functions,
 	 * argv is not NULL-terminated, and argv[0] is the first argument rather
 	 * than the builtin name. */
-	int (*func)(int argc, const char **argv);
+	int (*func)(unsigned argc, const char **argv);
 };
 
 /* Table of builtins recognized by the shell */
@@ -123,6 +130,7 @@ static const struct builtin builtins[] = {
 	{"setenv", builtin_setenv},
 	{"getenv", builtin_getenv},
 	{"exit",   builtin_exit},
+	{":",      builtin_dummy},
 };
 
 #define NUM_BUILTINS ARRAY_SIZE(builtins)
@@ -135,12 +143,13 @@ static const struct builtin builtins[] = {
  * @command_toks:  List of tokens for the arguments to the builtin, not
  *                 including the name of the builtin itself.
  *
- * @redirs:        List of tokens for the command's redirections.
+ * @redirs:        List of tokens for the builtin's redirections.
  *
- * @cmd_nargs:     Number of arguments that the command was passed.
+ * @cmd_nargs:     Number of arguments that the builtin was passed, not
+ *                 including the name of the builtin itself.
  *
- * Return value:  The return value of the builtin command function, or -1 if
- *                there are problems doing or undoing redirections.
+ * Return value:   The return value of the builtin command function, or -1 if
+ *                 there are problems doing or undoing redirections.
  */
 static int execute_builtin(const struct builtin *builtin,
 			   const struct token *cmd_args,

@@ -1,9 +1,13 @@
-CC := clang
-CFLAGS := -O0 -Wall -g
-
-#SHELL := $(shell if [ -x ./mysh ]; then echo mysh; else echo sh; fi )
-
-SOURCES := mysh_builtin.c mysh_main.c mysh_parse.c mysh_redir.c mysh_util.c 
+CFLAGS  := -O2 -Wall -g
+OBJ     := mysh_builtin.o mysh_main.o mysh_parse.o mysh_redir.o mysh_util.o 
 HEADERS := mysh.h
-mysh:$(SOURCES) $(HEADERS)
-	gcc -o $@ $(SOURCES) $(CFLAGS)
+EXE     := mysh
+
+$(EXE):$(OBJ)
+	gcc -o $@ $(CFLAGS) $+
+
+$(OBJ): mysh.h
+
+
+clean:
+	rm -f $(EXE) $(OBJ)

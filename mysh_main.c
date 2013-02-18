@@ -4,8 +4,8 @@
  * A simple shell program.
  *
  * This shell can execute commands in the following ways:
- *   - with no command line arguments, in which cases commands are read from
- *   standard input
+ *   - with no command line arguments to the shell, in which cases commands are
+ *   read from standard input
  *   - with the name of a file as a command line argument, in which case
  *   commands are read from the file
  *   - a single command passed as the argument to the '-c' option.
@@ -48,13 +48,14 @@
  */
 
 #include "mysh.h"
-#include <getopt.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/wait.h>
 #include <fcntl.h>
+#include <getopt.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 /* command -> string args redirections
  * args -> e | args string
@@ -185,7 +186,9 @@ static int execute_pipeline(const struct token * const *pipe_commands,
 	}
 
 	/* If the pipeline only has one command and is not being executed
-	 * asynchronously, try interpreting the command as a builtin. */
+	 * asynchronously, try interpreting the command as a builtin.  Note:
+	 * this means that with the current code, builtins cannot be used as
+	 * parts of a multi-component pipeline. */
 	if (ncommands == 1 || !async) {
 		if (maybe_execute_builtin(pipe_commands[0], redirs[0],
 					  command_nargs[0], &ret))
@@ -324,9 +327,9 @@ out:
 }
 
 /* Execute a line of input to the shell.  On parse error, returns -1.  On memory
- * allocation failure, aborts the program.  Otherwise, the return value is the
- * exit status of the last command in the pipeline executed, or 0 if there were
- * no commands in the pipeline (for example, just a comment). */
+ * allocation failure, exits the shell with status 1.  Otherwise, the return
+ * value is the exit status of the last command in the pipeline executed, or 0
+ * if there were no commands in the pipeline (for example, just a comment). */
 static int execute_line(const char *line)
 {
 	/* Parse the line into tokens, then pass control off to
@@ -347,6 +350,15 @@ static int execute_line(const char *line)
 	return execute_tok_list(tok_list);
 }
 
+static void set_up_signal_handlers()
+{
+	struct sigaction act;
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = SIG_IGN;
+	if (sigaction(SIGINT, &act, NULL) != 0)
+		mysh_error_with_errno("Failed to set up signal handlers");
+}
+
 int main(int argc, char **argv)
 {
 	int c;
@@ -355,24 +367,25 @@ int main(int argc, char **argv)
 	size_t n;
 	int status;
 
-	while ((c = getopt(argc, argv, "c:")) != -1) {
-		switch (c) {
-		case 'c':
-			return execute_line(optarg);
-		default:
-			mysh_error("invalid option");
-			exit(2);
-		}
-	}
+	set_up_signal_handlers();
 
+	while ((c = getopt(argc, argv, "c:")) != -1) {
+		if (c == 'c') {
+			status = execute_line(optarg);
+		} else {
+			mysh_error("invalid option");
+			status = 2;
+		}
+		goto out;
+	}
 	argc -= optind;
 	argv += optind;
-
 	if (argc) {
 		in = fopen(argv[0], "rb");
 		if (!in) {
 			mysh_error_with_errno("can't open %s", argv[0]);
-			exit(1);
+			status = 1;
+			goto out;
 		}
 	} else
 		in = stdin;
@@ -394,5 +407,6 @@ int main(int argc, char **argv)
 	}
 	fclose(in);
 	free(line);
+out:
 	return status;
 }
