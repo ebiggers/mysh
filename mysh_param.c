@@ -1,3 +1,9 @@
+/*
+ * mysh_param.c
+ *
+ * Handle shell parameters / variables
+ */
+
 #include "mysh.h"
 #include <stdio.h>
 #include <unistd.h>
@@ -7,8 +13,10 @@
 char **positional_parameters;
 unsigned int num_positional_parameters;
 
+#define NUM_SHELL_PARAM_VALID_CHARS 63
+
 struct param_trie_node {
-	struct param_trie_node *children[63];
+	struct param_trie_node *children[NUM_SHELL_PARAM_VALID_CHARS];
 	struct param_trie_node *parent;
 	struct param_trie_node **parent_child_ptr;
 	char *value;
@@ -28,11 +36,38 @@ extern char **environ;
 
 static char trie_slot_tab[256];
 
-int trie_get_slot(char c)
+/* Initialize a table to map from the %NUM_SHELL_PARAM_VALID_CHARS allowed shell
+ * variable characters to a numbering [0, %NUM_SHELL_PARAM_VALID_CHARS - 1]. */
+static void init_trie_slot_tab()
 {
+	int i, n;
+	for (i = 0; i < 256; i++)
+		trie_slot_tab[i] = -1;
+	n = 0;
+	for (i = 'a'; i <= 'z'; i++)
+		trie_slot_tab[i] = n++;
+	for (i = 'A'; i <= 'Z'; i++)
+		trie_slot_tab[i] = n++;
+	for (i = '0'; i <= '9'; i++)
+		trie_slot_tab[i] = n++;
+	trie_slot_tab['_'] = n++;
+	mysh_assert(n == NUM_SHELL_PARAM_VALID_CHARS);
+}
+
+static int trie_get_slot(char c)
+{
+	mysh_assert(trie_slot_tab['z'] != 0);
 	return (int)trie_slot_tab[(unsigned char)c];
 }
 
+
+/* Set or unset a shell variable.
+ *
+ * @node:  Root of the trie of shell variables.
+ * @name:  Name of the variable to insert.
+ * @len:   Length of the name of the variable to insert.
+ * @value: null-terminated value of the variable, or NULL to unset the variable.
+ */
 static void insert_param(struct param_trie_node *node,
 			 const char *name, size_t len, char *value)
 {
@@ -50,6 +85,9 @@ static void insert_param(struct param_trie_node *node,
 	}
 	free(node->value);
 	node->value = value;
+
+	/* If we unset a parameter by inserting NULL, walk up the free and free
+	 * any nodes that aren't needed anymore. */
 	while (node->value == NULL && node->num_children == 0) {
 		struct param_trie_node **parent_child_ptr = node->parent_child_ptr;
 		struct param_trie_node *parent = node->parent;
@@ -77,9 +115,14 @@ void insert_shell_param(const char *name, const char *value)
 void make_param_assignment(const char *assignment)
 {
 	const char *equals = strchr(assignment, '=');
+	mysh_assert(equals != NULL);
 	insert_shell_param_len(assignment, equals - assignment, equals + 1);
 }
 
+/* Export a shell variable into the environment.
+ *
+ * @name: The name of the shell variable to insert (null-terminated)
+ */
 int export_variable(const char *name)
 {
 	const char *value = lookup_shell_param(name);
@@ -93,22 +136,7 @@ int export_variable(const char *name)
 	return ret;
 }
 
-
-static void init_trie_slot_tab()
-{
-	int i, n;
-	for (i = 0; i < 256; i++)
-		trie_slot_tab[i] = -1;
-	n = 0;
-	for (i = 'a'; i <= 'z'; i++)
-		trie_slot_tab[i] = n++;
-	for (i = 'A'; i <= 'Z'; i++)
-		trie_slot_tab[i] = n++;
-	for (i = '0'; i <= '9'; i++)
-		trie_slot_tab[i] = n++;
-	trie_slot_tab['_'] = n++;
-}
-
+/* Loads the environment into shell variables */
 void init_param_map()
 {
 	char **env_p;
@@ -142,6 +170,8 @@ static void free_param_trie(struct param_trie_node *node)
 
 }
 
+/* Unsets all shell variables, thereby freeing the memory allocated to store
+ * shell variables. */
 void destroy_param_map()
 {
 	free_param_trie(&param_trie_root);
@@ -176,6 +206,14 @@ shell_param_char_type(char c)
 	return shell_param_char_tab[(unsigned char)c];
 }
 
+/* Looks up a shell variable that is not a positional parameter or special
+ * variable.  Note that this finds environmental variables as well, provided
+ * that they have been inserted as shell variables with init_param_map().
+ *
+ * @name:  The name of the variable to look up.
+ * @len:   The length of the name of the variable.
+ *
+ * Returns the value of the variable if it's set; otherwise, NULL.  */
 const char *
 lookup_shell_param_len(const char *name, size_t len)
 {
@@ -197,6 +235,8 @@ lookup_shell_param(const char *name)
 	return lookup_shell_param_len(name, strlen(name));
 }
 
+/* Looks up a shell variable that may be a regular variable, a positional
+ * parameter, or a special variable. */
 const char *
 lookup_param(const char *name, size_t len)
 {
@@ -204,6 +244,7 @@ lookup_param(const char *name, size_t len)
 
 	unsigned char char_type = shell_param_char_type(*name);
 	if (char_type & SHELL_PARAM_NUMERIC_CHAR) {
+		/* Positional parameter */
 		unsigned n = 0;
 		do {
 			n *= 10;
@@ -214,18 +255,23 @@ lookup_param(const char *name, size_t len)
 		else
 			return positional_parameters[n];
 	} else if (char_type & SHELL_PARAM_SPECIAL_CHAR) {
+		/* Special variable */
 		switch (*name) {
 		case '$':
+			/* $$: Process ID */
 			sprintf(buf, "%d", getpid());
 			return buf;
 		case '?':
+			/* $?: Exit status of last command */
 			sprintf(buf, "%d", last_exit_status);
 			return buf;
 		case '#':
+			/* $#: Number of positional parameters */
 			sprintf(buf, "%u", num_positional_parameters);
 			return buf;
 		}
 	} else {
+		/* Regular variable; look it up in the trie. */
 		return lookup_shell_param_len(name, len);
 	}
 	return NULL;
@@ -399,6 +445,13 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 	return s;
 }
 
+/* Set the positional parameters of the shell.
+ *
+ * @num_params:  Number of positional parameters, not counting $0.
+ *               Equivalent to the $# shell variable.
+ * @param0:      String to set as the $0 variable.
+ * @params:      Array of length @num_params that gives the positional
+ *               parameters $1, $2, ... $@num_params. */
 void set_positional_params(int num_params, char *param0, char **params)
 {
 	unsigned i;
@@ -410,6 +463,7 @@ void set_positional_params(int num_params, char *param0, char **params)
 		positional_parameters[i + 1] = xstrdup(params[i]);
 }
 
+/* Free the memory allocated for positional parameters. */
 void destroy_positional_params()
 {
 	unsigned i;

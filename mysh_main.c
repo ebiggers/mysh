@@ -126,13 +126,25 @@ fail:
 
 
 /*
- * Split an unquoted string around whitespace produced by parameter expansion.
+ * Split a unquoted string around whitespace produced by parameter
+ * expansion.
  *
- * @s:               The string to split.
+ * @s:               The string to split. It will be freed or transferred
+ *                   to @out_list.
  *
  * @out_list:        An empty list into which the split strings will be written.
- *                   If the string is entirely whitespace produced by parameter
- *                   expansion, then the resulting list will remain empty.
+ *                   If the string is empty or is entirely whitespace produced
+ *                   by parameter expansion, then the resulting list will remain
+ *                   empty.  Otherwise, the string will have one or more strings
+ *                   written to it, and they will have the same flags as the
+ *                   original string except for the following two exceptions:
+ *                     (1) The strings will have STRING_FLAG_WORD_SPLIT set,
+ *                         unless the list contains only the original string @s
+ *                         (i.e. if word splitting was a no-op).
+ *                     (2) All strings except the first will have
+ *                         STRING_FLAG_PRECEDING_WHITESPACE set.  The first will
+ *                         have STRING_FLAG_PRECEDING_WHITESPACE set if and only
+ *                         if @leading_whitespace is set to %true.
  *
  * @param_char_map:  A map from character position to booleans
  *                   that indicate whether the character was produced by
@@ -151,36 +163,35 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 			       const unsigned char *param_char_map,
 			       bool *leading_whitespace, bool *trailing_whitespace)
 {
-	const char *whitespace_chars = " \r\t\n\v\f";
 	const char *chars;
 	struct string *s2;
 	size_t i;
 
-	mysh_assert(param_char_map != NULL);
 	mysh_assert(list_empty(out_list));
-	if (!strpbrk(s->chars, whitespace_chars)) {
-		/* No whitespace in string. */
-		*leading_whitespace = false;
-		*trailing_whitespace = false;
-		if (s->len != 0)
-			list_add_tail(&s->list, out_list);
-		return;
-	}
+
 	chars = s->chars;
 	i = 0;
-	*leading_whitespace = isspace(chars[i] != 0) && param_char_map[i] != 0;
+	*leading_whitespace = false;
 	while (1) {
-		/* skip leading whitespace, including only whitespace that was
-		 * produced by parameter expansion  */
+		/* skip leading whitespace produced by parameter expansion  */
 		size_t j = i;
-		while (isspace(chars[i]) && param_char_map[i] != 0)
+		while (isspace(chars[i]) && param_char_map[i] != 0) {
+			if (i == 0)
+				*leading_whitespace = true;
 			i++;
+		}
 
 		if (chars[i] == '\0') {
+			/* end of string: set trailing_whitespace if there was
+			 * at least 1 parameter-expanded whitespace character at
+			 * the end of the string.  Also, free @s before
+			 * returning, since it's no longer needed. */
 			*trailing_whitespace = (i != j);
 			free_string(s);
 			return;
 		}
+		/* j is set the index of the next character that is not a
+		 * parameter-expanded whitespace character */
 		j = i;
 
 		/* skip non-whitespace and whitespace not produced by parameter
@@ -188,12 +199,26 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 		while (chars[i] != '\0' && (!isspace(chars[i]) || !param_char_map[i]))
 			i++;
 
-		s2 = new_string_with_data(&chars[j], i - j);
-		s2->flags = s->flags;
-		if (i != 0)
-			s2->flags |= (STRING_FLAG_WORD_SPLIT | STRING_FLAG_PRECEDING_WHITESPACE);
-		list_add_tail(&s2->list, out_list);
-		i++;
+		if (j == 0 && i == s->len) {
+			/* Add entire string and return. */
+			*trailing_whitespace = false;
+			list_add_tail(&s->list, out_list);
+			return;
+		} else {
+			/* Create a new substring and append it to the list of
+			 * split strings.
+			 *
+			 * STRING_FLAG_WORD_SPLIT is set on every new substring.
+			 * STRING_FLAG_PRECEDING_WHITESPACE is set on all
+			 * substrings except the first if it occurs at the very
+			 * beginning of the original string. */
+
+			s2 = new_string_with_data(&chars[j], i - j);
+			s2->flags = s->flags | STRING_FLAG_WORD_SPLIT;
+			if (i != 0)
+				s2->flags |= STRING_FLAG_PRECEDING_WHITESPACE;
+			list_add_tail(&s2->list, out_list);
+		}
 	}
 }
 
@@ -253,7 +278,7 @@ static int
 expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 {
 	struct string *s;
-	bool leading_whitespace, trailing_whitespace;
+	bool leading_whitespace;
 	unsigned char *param_char_map;
 
 	mysh_assert(tok->type & TOK_CLASS_STRING);
@@ -277,31 +302,44 @@ expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 		break;
 	}
 	tok->tok_data = NULL;
+
+	/* Do parameter expansion on unquoted strings and on double-quoted
+	 * strings */
 	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
 		s = do_param_expansion(s, &param_char_map);
-	if (tok->type & TOK_UNQUOTED_STRING && param_char_map) {
-		split_string_around_whitespace(s, out_list,
-					       param_char_map,
+
+	/* Do word splitting on unquoted strings that had parameter expansion
+	 * performed */
+	if ((tok->type & TOK_UNQUOTED_STRING) && (s->flags & STRING_FLAG_PARAM_EXPANDED)) {
+		bool trailing_whitespace;
+		split_string_around_whitespace(s, out_list, param_char_map,
 					       &leading_whitespace,
 					       &trailing_whitespace);
+		/* If there was trailing whitespace as a result of word
+		 * splitting, force @preceded_by_whitespace to true on the next
+		 * token (if there is one) */
+		if (tok->next != NULL && trailing_whitespace)
+			tok->next->preceded_by_whitespace = true;
 	} else {
 		list_add_tail(&s->list, out_list);
 		leading_whitespace = false;
-		trailing_whitespace = false;
 	}
+
+	/* If at least one string was produced as a result of word splitting and
+	 * either the original token was preceded by whitespace or there was
+	 * additional preceding whitespace produced by parameter expansion, set
+	 * STRING_FLAG_PRECEDING_WHITESPACE on the first string. */
 	if ((tok->preceded_by_whitespace || leading_whitespace) &&
 	    !list_empty(out_list))
 	{
 		list_entry(out_list->next, struct string, list)->flags |=
 			STRING_FLAG_PRECEDING_WHITESPACE;
 	}
-	if (tok->next != NULL && trailing_whitespace)
-		tok->next->preceded_by_whitespace = true;
 	return 0;
 }
 
 static int
-glue_strings_and_expand_filenames(struct list_head *string_list)
+glue_strings(struct list_head *string_list)
 {
 	struct string *s, *tmp;
 	LIST_HEAD(new_list);
@@ -319,7 +357,7 @@ glue_strings_and_expand_filenames(struct list_head *string_list)
 		list_add_tail(&s->list, &new_list);
 	}
 	list_splice_tail(&new_list, string_list);
-	return do_filename_expansion(string_list);
+	return 0;
 }
 
 static int
@@ -335,27 +373,27 @@ parse_tok_list(struct token *tok,
 	int ret;
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
-	unsigned nleading_var_assignments = 0;
 	while (tok->type & TOK_CLASS_STRING) {
 		LIST_HEAD(tmp_list);
 		ret = expand_params_and_word_split(tok, &tmp_list);
-		if (ret != 0)
+		if (ret)
 			goto out_free_string_lists;
 		list_splice_tail(&tmp_list, &string_list);
 		tok = tok->next;
-		if (!tok) {
-			ret = 0;
+		if (!tok)
 			break;
-		}
 	}
-	ret = glue_strings_and_expand_filenames(&string_list);
-	if (ret != 0)
+	ret = glue_strings(&string_list);
+	if (ret)
+		goto out_free_string_lists;
+	ret = do_filename_expansion(&string_list);
+	if (ret)
 		goto out_free_string_lists;
 	INIT_LIST_HEAD(cmd_args);
 	INIT_LIST_HEAD(redirs);
 	list_splice_tail(&string_list, cmd_args);
 	*cmd_nargs_ret = list_size(cmd_args);
-	*nleading_var_assignments_ret = nleading_var_assignments;
+	*nleading_var_assignments_ret = 0;
 	goto out;
 #if 0
 	bool is_first_redirection = true;

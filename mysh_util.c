@@ -62,6 +62,8 @@ char *xstrdup(const char *s)
 	return p;
 }
 
+/* Allocates a new string with space for @len characters.  flags are initially
+ * cleared. */
 struct string *
 new_string(size_t len)
 {
@@ -72,15 +74,17 @@ new_string(size_t len)
 	return s;
 }
 
+/* Allocates a new string with a copy of the characters at @chars for @len
+ * bytes.  flags are initially cleared. */
 struct string *
 new_string_with_data(const char *chars, size_t len)
 {
 	struct string *s = new_string(len);
 	memcpy(s->chars, chars, len);
-	s->chars[len] = '\0';
 	return s;
 }
 
+/* Frees a string, including the character data */
 void
 free_string(struct string *s)
 {
@@ -88,6 +92,7 @@ free_string(struct string *s)
 	free(s);
 }
 
+/* Frees a list of strings */
 void
 free_string_list(struct list_head *string_list)
 {
@@ -99,6 +104,8 @@ free_string_list(struct list_head *string_list)
 }
 
 
+/* Concatenates a list of strings and returns the resulting string, with all
+ * flags cleared.  The original strings in the list are freed. */
 struct string *
 join_strings(struct list_head *strings)
 {
@@ -106,12 +113,11 @@ join_strings(struct list_head *strings)
 	size_t len = 0;
 	char *p;
 
-	if (strings->next == strings->prev) /* no-op */
+	mysh_assert(!list_empty(strings));
+	if (list_is_singular(strings)) /* no-op */
 		return list_entry(strings->next, struct string, list);
-
 	list_for_each_entry(s, strings, list)
 		len += s->len;
-
 	new = new_string(len);
 	p = new->chars;
 	list_for_each_entry_safe(s, tmp, strings, list) {

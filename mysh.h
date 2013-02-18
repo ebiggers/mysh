@@ -74,6 +74,7 @@ struct string {
 #define STRING_FLAG_WORD_SPLIT			0x20
 #define STRING_FLAG_FILENAME_EXPANDED		0x40
 #define STRING_FLAG_WAS_PARAM			0x80
+#define STRING_FLAG_VAR_ASSIGNMENT              0x100
 
 /* mysh_builtin.c */
 extern int set_pwd();
