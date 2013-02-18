@@ -4,6 +4,7 @@
  * Miscellaneous functions
  */
 
+#define _GNU_SOURCE
 #include "mysh.h"
 #include <stdio.h>
 #include <stdarg.h>
@@ -44,12 +45,85 @@ void *xmalloc(size_t len)
 	return p;
 }
 
-void *xstrdup(const char *s)
+void *zmalloc(size_t len)
 {
-	const char *p = strdup(s);
+	return memset(xmalloc(len), 0, len);
+}
+
+char *xstrdup(const char *s)
+{
+	char *p = strdup(s);
 	if (!p) {
 		mysh_error("out of memory");
 		exit(-1);
 	}
 	return p;
+}
+
+struct string *
+new_string(size_t len)
+{
+	struct string *s = xmalloc(sizeof(struct string));
+	s->chars = xmalloc(len + 1);
+	s->len = len;
+	return s;
+}
+
+struct string *
+new_string_with_data(const char *chars, size_t len)
+{
+	struct string *s = new_string(len);
+	memcpy(s->chars, chars, len);
+	s->chars[len] = '\0';
+	return s;
+}
+
+void
+free_string(struct string *s)
+{
+	free(s->chars);
+	free(s);
+}
+
+void
+free_string_list(struct list_head *string_list)
+{
+	struct string *s, *tmp;
+	list_for_each_entry_safe(s, tmp, string_list, list)
+		free_string(s);
+}
+
+
+void
+append_string(const char *chars, size_t len, struct list_head *out_list)
+{
+	struct string *s = new_string_with_data(chars, len);
+	list_add_tail(&s->list, out_list);
+}
+
+void
+append_param(const char *name, size_t len, struct list_head *out_list)
+{
+	const char *value = lookup_param(name, len);
+	if (value)
+		append_string(value, strlen(value), out_list);
+}
+
+struct string *
+join_strings(struct list_head *strings)
+{
+	struct string *s, *new, *tmp;
+	size_t len = 0;
+	char *p;
+
+	list_for_each_entry(s, strings, list)
+		len += s->len;
+
+	new = new_string(len);
+	p = new->chars;
+	list_for_each_entry_safe(s, tmp, strings, list) {
+		p = mempcpy(p, s->chars, s->len);
+		free_string(s);
+	}
+	return new;
 }

@@ -23,8 +23,10 @@ int undo_redirections(const struct orig_fds *orig)
 /* Apply the redirections in the token list @redirs.  If @orig is non-NULL, save
  * the original file descriptors in there.  Return %true on success, %false on
  * failure. */
-int do_redirections(const struct token *redirs, struct orig_fds *orig)
+int do_redirections(const struct list_head *redirs, struct orig_fds *orig)
 {
+	return 0;
+#if 0
 	while (redirs && (redirs->type & TOK_CLASS_REDIRECTION)) {
 		int open_flags;
 		int dest_fd;
@@ -75,4 +77,5 @@ out_undo_redirections:
 	if (orig)
 		(void)undo_redirections(orig);
 	return -1;
+#endif
 }

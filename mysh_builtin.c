@@ -183,13 +183,13 @@ static const struct builtin builtins[] = {
  *                 there are problems doing or undoing redirections.
  */
 static int execute_builtin(const struct builtin *builtin,
-			   const struct token *cmd_args,
-			   const struct token *redirs,
+			   const struct list_head *cmd_args,
+			   const struct list_head *redirs,
 			   unsigned cmd_nargs)
 {
 	struct orig_fds orig = {-1, -1};
 	const char *argv[cmd_nargs];
-	const struct token *tok;
+	struct string *s;
 	unsigned i;
 	int status;
 	int ret;
@@ -200,9 +200,12 @@ static int execute_builtin(const struct builtin *builtin,
 		return status;
 
 	/* Prepare argv for the builtin */
-	tok = cmd_args;
-	for (i = 0; i < cmd_nargs; i++, tok = tok->next)
-		argv[i] = tok->tok_data;
+	for (i = 0, s = list_entry(cmd_args->next, struct string, list);
+	     i < cmd_nargs;
+	     i++, s = list_entry(s->list.next, struct string, list))
+	{
+		argv[i] = s->chars;
+	}
 	/* Call the builtin function */
 	builtin->func(cmd_nargs, argv);
 
@@ -232,15 +235,18 @@ static int execute_builtin(const struct builtin *builtin,
  * Return value:   %true if a builtin was executed; %false if the command
  *                 did not match a shell builtin.
  */
-bool maybe_execute_builtin(const struct token *command_toks,
-			   const struct token *redirs,
+bool maybe_execute_builtin(const struct list_head *command_toks,
+			   const struct list_head *redirs,
 			   unsigned cmd_nargs, int *status_ret)
 {
-	const char *name = command_toks->tok_data;
+	const char *name;
 	size_t i;
 
+	if (list_empty(command_toks))
+		return false;
+	name = list_entry(command_toks->next, struct string, list)->chars;
 	for (i = 0; i < NUM_BUILTINS; i++) {
-		if (strcmp(builtins[i].name, name) == 0 && builtins[i].func) {
+		if (strcmp(builtins[i].name, name) == 0) {
 			/* The command matched a builtin.  Execute it. */
 			*status_ret = execute_builtin(&builtins[i],
 						      command_toks->next,
