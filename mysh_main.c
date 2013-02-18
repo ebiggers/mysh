@@ -47,7 +47,9 @@
  *   the shell exit status is equal to the last exit status in the script.
  */
 
+#define _GNU_SOURCE
 #include "mysh.h"
+#include "list.h"
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
@@ -55,53 +57,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <ctype.h>
 #include <unistd.h>
 
-/* command -> string args redirections
- * args -> e | args string
- * redirections -> stdin_redirection stdout_redirection
- * stdin_redirection -> '<' STRING | e
- * stdout_redirection -> '<' STRING | e */
-static int verify_command(const struct token *tok,
-			  const bool is_last,
-			  bool *async_ret,
-			  unsigned *nargs_ret,
-			  const struct token **redirs_ret)
-{
-	if (!(tok->type & TOK_CLASS_STRING)) {
-		mysh_error("expected string as first token of command");
-		return -1;
-	}
-	*nargs_ret = 0;
-	do {
-		tok = tok->next;
-		++*nargs_ret;
-		if (!tok)
-			return 0;
-	} while (tok->type & TOK_CLASS_STRING);
 
-	while (tok->type & TOK_CLASS_REDIRECTION) {
-		if (!*redirs_ret)
-			*redirs_ret = tok;
-		if (!tok->next || !(tok->next->type & TOK_CLASS_STRING)) {
-			mysh_error("expected filename after redirection operator");
-			return -1;
-		}
-		tok = tok->next;
-		tok = tok->next;
-		if (!tok)
-			return 0;
-	}
-	if (is_last && tok->type == TOK_AMPERSAND) {
-		*async_ret = true;
-		tok = tok->next;
-	}
-	if (tok) {
-		mysh_error("found trailing tokens in command");
-		return -1;
-	}
-	return 0;
-}
+/* globals */
+char **positional_parameters;
+unsigned int num_positional_parameters;
+int last_exit_status;
+
 
 /* Executed by the child process after a fork().  The child now must set up
  * redirections of stdin and stdout (if any) and execute the new program. */
@@ -160,27 +124,361 @@ fail:
 	exit(-1);
 }
 
+enum redirection_type {
+	REDIR_TYPE_FD_TO_FD,
+	REDIR_TYPE_FILE_TO_FD,
+	REDIR_TYPE_FD_TO_FILE,
+};
+
+struct redirection {
+	enum redirection_type type;
+	union {
+		int from_fd;
+		const char *from_filename;
+	};
+	union {
+		int to_fd;
+		const char *to_filename;
+	};
+	struct list_head list;
+};
+
+struct string {
+	char *chars;
+	size_t len;
+	struct list_head list;
+};
+
+#define SHELL_PARAM_ALPHA_CHAR      0x1
+#define SHELL_PARAM_NUMERIC_CHAR    0x2
+#define SHELL_PARAM_UNDERSCORE_CHAR 0x4
+#define SHELL_PARAM_SPECIAL_CHAR    0x8
+#define SHELL_PARAM_BEGIN_BRACE     0x10
+#define SHELL_PARAM_END_BRACE       0x20
+
+static const unsigned char shell_param_char_tab[256] = {
+	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
+	['a' ... 'z'] = SHELL_PARAM_ALPHA_CHAR,
+	['0' ... '9'] = SHELL_PARAM_NUMERIC_CHAR,
+	['_']         = SHELL_PARAM_UNDERSCORE_CHAR,
+	['@']         = SHELL_PARAM_SPECIAL_CHAR,
+	['*']         = SHELL_PARAM_SPECIAL_CHAR,
+	['#']         = SHELL_PARAM_SPECIAL_CHAR,
+	['?']         = SHELL_PARAM_SPECIAL_CHAR,
+	['-']         = SHELL_PARAM_SPECIAL_CHAR,
+	['$']         = SHELL_PARAM_SPECIAL_CHAR,
+	['!']         = SHELL_PARAM_SPECIAL_CHAR,
+	['{']         = SHELL_PARAM_BEGIN_BRACE,
+	['}']         = SHELL_PARAM_END_BRACE,
+};
+
+static int shell_param_char_type(char c)
+{
+	return shell_param_char_tab[(unsigned char)c];
+}
+
+static const char *lookup_shell_param(const char *name, size_t len)
+{
+	return NULL;
+}
+
+static const char *lookup_param(const char *name, size_t len)
+{
+	if (len == 0)
+		return NULL;
+
+	static char buf[20];
+
+	if (*name & SHELL_PARAM_NUMERIC_CHAR) {
+		unsigned n = 0;
+		do {
+			n *= 10;
+			n += *name - '0';
+		} while (--len);
+		if (n > num_positional_parameters)
+			return NULL;
+		else
+			return positional_parameters[n];
+	} else if (*name & SHELL_PARAM_SPECIAL_CHAR) {
+		switch (*name) {
+		case '$':
+			sprintf(buf, "%d", getpid());
+			return buf;
+		case '?':
+			sprintf(buf, "%d", last_exit_status);
+			return buf;
+		case '#':
+			sprintf(buf, "%u", num_positional_parameters);
+			return buf;
+		}
+	} else {
+		return lookup_shell_param(name, len);
+	}
+	return NULL;
+}
+
+
+static struct string *
+new_string(size_t len)
+{
+	struct string *s = xmalloc(sizeof(struct string));
+	s->chars = xmalloc(len + 1);
+	s->len = len;
+	return s;
+}
+
+static struct string *
+new_string_with_data(const char *chars, size_t len)
+{
+	struct string *s = new_string(len);
+	memcpy(s->chars, chars, len);
+	s->chars[len] = '\0';
+	return s;
+}
+
+static void free_string(struct string *s)
+{
+	free(s->chars);
+	free(s);
+}
+
+
+static void append_string(const char *chars, size_t len,
+			  struct list_head *out_list)
+{
+	struct string *s = new_string_with_data(chars, len);
+	list_add_tail(&s->list, out_list);
+}
+
+static void append_param(const char *name, size_t len, struct list_head *out_list)
+{
+	const char *value = lookup_param(name, len);
+	if (value)
+		append_string(value, strlen(value), out_list);
+}
+
+static struct string *
+join_strings(struct list_head *strings)
+{
+	struct string *s, *new, *tmp;
+	size_t len = 0;
+	char *p;
+
+	list_for_each_entry(s, strings, list)
+		len += s->len;
+
+	new = new_string(len);
+	p = new->chars;
+	list_for_each_entry_safe(s, tmp, strings, list) {
+		p = mempcpy(p, s->chars, s->len);
+		free_string(s);
+	}
+	return new;
+}
+
+static struct string *
+do_variable_expansion(struct string *s)
+{
+	const char *var_begin;
+	const char *dollar_sign;
+	const char *var_end;
+	const char *last_var_end;
+	unsigned char mask;
+	unsigned char char_type;
+	LIST_HEAD(string_list);
+
+	var_end = s->chars;
+	dollar_sign = strchr(var_end, '$');
+	if (!dollar_sign)
+		return s;
+	do {
+		append_string(var_end, dollar_sign - var_end, &string_list);
+		var_begin = dollar_sign + 1;
+		var_end = var_begin;
+		if (*var_end == '{')
+			var_end++;
+		char_type = shell_param_char_type(*var_end);
+		if (char_type & (SHELL_PARAM_ALPHA_CHAR |
+				 SHELL_PARAM_NUMERIC_CHAR |
+				 SHELL_PARAM_UNDERSCORE_CHAR |
+				 SHELL_PARAM_SPECIAL_CHAR))
+		{
+			if (char_type & SHELL_PARAM_NUMERIC_CHAR) {
+				/* positional parameter */
+				mask = SHELL_PARAM_NUMERIC_CHAR;
+			} else if (char_type & SHELL_PARAM_SPECIAL_CHAR) {
+				/* special parameter */
+				mask = 0;
+			} else {
+				/* regular parameter */
+				mask = SHELL_PARAM_ALPHA_CHAR | SHELL_PARAM_NUMERIC_CHAR |
+				       SHELL_PARAM_UNDERSCORE_CHAR;
+			}
+			do {
+				var_end++;
+			} while (shell_param_char_type(*var_end) & mask);
+			if (*var_end == '}') {
+				if (*var_begin == '{') {
+					var_begin++;
+					var_end++;
+				}
+			}
+			append_param(var_begin, var_end - var_begin, &string_list);
+		}
+	} while ((dollar_sign = strchr(last_var_end, '$')));
+	return join_strings(&string_list);
+}
+
+static void
+split_string_around_whitespace(struct string *s, struct list_head *out_list)
+{
+	const char *whitespace_chars = " \r\t\n";
+	const char *strstart;
+	const char *strend;
+
+	if (!strpbrk(s->chars, whitespace_chars)) {
+		/* No whitespace in string. */
+		list_add_tail(&s->list, out_list);
+		return;
+	}
+
+	strstart = s->chars;
+	while (1) {
+		while (isspace(*strstart))
+			strstart++;
+
+		if (*strstart == '\0')
+			return;
+
+		strend = strpbrk(strstart, whitespace_chars);
+		append_string(strstart, strend - strstart, out_list);
+		strstart = strend + 1;
+	}
+}
+
+static void
+string_do_filename_expansion(struct string *s, struct list_head *out_list)
+{
+}
+
+static int do_filename_expansion(struct list_head *string_list)
+{
+	struct string *s, *tmp;
+	list_for_each_entry_safe(s, tmp, string_list, list) {
+	}
+}
+
+static int expand_string(struct token *tok, struct list_head *out_list)
+{
+	struct list_head string_list;
+	struct string *s;
+	int ret;
+	
+
+	s = xmalloc(sizeof(struct string));
+	s->chars = tok->tok_data;
+	tok->tok_data = NULL;
+
+	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
+		s = do_variable_expansion(s);
+
+	INIT_LIST_HEAD(&string_list);
+	if (tok->type & TOK_UNQUOTED_STRING)
+		split_string_around_whitespace(s, &string_list);
+	else
+		list_add_tail(&s->list, &string_list);
+
+	if (tok->type & TOK_UNQUOTED_STRING)
+		if ((ret = do_filename_expansion(&string_list)))
+			goto out_free_string_list;
+	ret = 0;
+	return 0;
+out_free_string_list:
+	/*list_for_each_entry_safe(s, &string_list, list)*/
+		/*free(s);*/
+	return ret;
+}
+
+/* command -> string args redirections
+ * args -> e | args string
+ * redirections -> stdin_redirection stdout_redirection
+ * stdin_redirection -> '<' STRING | e
+ * stdout_redirection -> '<' STRING | e */
+static int parse_tok_list(const struct token *tok,
+			  const bool is_last,
+			  bool *async_ret,
+			  struct list_head *cmd_args,
+			  unsigned *cmd_nargs_ret,
+			  struct list_head *redirections)
+{
+
+	int ret;
+	while (tok->type & TOK_CLASS_STRING) {
+		ret = expand_string(tok, cmd_args);
+		if (ret < 0)
+			return ret;
+		*cmd_nargs_ret += ret;
+		tok = tok->next;
+		if (!tok)
+			return 0;
+	}
+
+	*nargs_ret = 0;
+	do {
+		tok = tok->next;
+		if (!tok)
+			return 0;
+	} while (tok->type & TOK_CLASS_STRING);
+
+	while (tok->type & TOK_CLASS_REDIRECTION) {
+		if (!*redirs_ret)
+			*redirs_ret = tok;
+		if (!tok->next || !(tok->next->type & TOK_CLASS_STRING)) {
+			mysh_error("expected filename after redirection operator");
+			return -1;
+		}
+		tok = tok->next;
+		tok = tok->next;
+		if (!tok)
+			return 0;
+	}
+	if (is_last && tok->type == TOK_AMPERSAND) {
+		*async_ret = true;
+		tok = tok->next;
+	}
+	if (tok) {
+		mysh_error("found trailing tokens in command");
+		return -1;
+	}
+	return 0;
+}
+
 static int execute_pipeline(const struct token * const *pipe_commands,
 			    unsigned ncommands)
 {
 	unsigned i;
-	unsigned cmd_idx;
 	int ret;
-	struct token *redirs[ncommands];
+
+	bool async;
+	struct list_head redir_lists[ncommands];
+	struct list_head cmd_arg_lists[ncommands];
+	unsigned cmd_nargs[ncommands];
+
+	unsigned cmd_idx;
 	int pipe_fds[2];
 	int prev_read_end;
-	unsigned command_nargs[ncommands];
 	pid_t child_pids[ncommands];
-	bool async;
 
-	ZERO_ARRAY(redirs);
 	async = false;
 	for (i = 0; i < ncommands; i++) {
-		ret = verify_command(pipe_commands[i],
+		INIT_LIST_HEAD(&redir_lists[i]);
+		INIT_LIST_HEAD(&cmd_arg_lists[i]);
+		ret = parse_tok_list(pipe_commands[i],
 				     (i == ncommands - 1),
 				     &async, 
-				     &command_nargs[i],
-				     (const struct token**)&redirs[i]);
+				     &cmd_arg_lists[i],
+				     &cmd_nargs[i],
+				     &redir_lists[i]);
 		if (ret)
 			return ret;
 	}
@@ -366,6 +664,7 @@ int main(int argc, char **argv)
 	char *line;
 	size_t n;
 	int status;
+	int i;
 
 	set_up_signal_handlers();
 
@@ -389,6 +688,12 @@ int main(int argc, char **argv)
 		}
 	} else
 		in = stdin;
+
+	num_positional_parameters = argc;
+	positional_parameters = xmalloc((num_positional_parameters + 1) * sizeof(char *));
+	positional_parameters[0] = argv[-1];
+	for (i = 0; i < argc; i++)
+		positional_parameters[i + 1] = argv[i];
 
 	status = 0;
 	line = NULL;

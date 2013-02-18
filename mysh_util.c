@@ -44,3 +44,12 @@ void *xmalloc(size_t len)
 	return p;
 }
 
+void *xstrdup(const char *s)
+{
+	const char *p = strdup(s);
+	if (!p) {
+		mysh_error("out of memory");
+		exit(-1);
+	}
+	return p;
+}

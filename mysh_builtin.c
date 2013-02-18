@@ -100,6 +100,36 @@ static int builtin_getenv(unsigned argc, const char **argv)
 	return ret;
 }
 
+static int builtin_shift(unsigned argc, const char **argv)
+{
+	unsigned amount;
+	unsigned i;
+	if (argc) {
+		int iamount = atoi(argv[0]);
+		if (iamount < 0) {
+			mysh_error("shift: shift count cannot be negative");
+			return 1;
+		}
+		amount = iamount;
+		if (amount > num_positional_parameters) {
+			mysh_error("shift: shift count greater than "
+				   "number of positional parameters");
+			return 1;
+		}
+	} else {
+		if (num_positional_parameters == 0)
+			return 0;
+		amount = 1;
+	}
+
+	for (i = 1; i <= amount; i++)
+		free(positional_parameters[i]);
+	for (; i <= num_positional_parameters; i++)
+		positional_parameters[i - amount] = positional_parameters[i];
+	num_positional_parameters -= amount;
+	return 0;
+}
+
 /* Exit the shell */
 static int builtin_exit(unsigned argc, const char **argv)
 {
@@ -129,6 +159,7 @@ static const struct builtin builtins[] = {
 	{"cd",     builtin_cd},
 	{"setenv", builtin_setenv},
 	{"getenv", builtin_getenv},
+	{"shift",  builtin_shift},
 	{"exit",   builtin_exit},
 	{":",      builtin_dummy},
 };

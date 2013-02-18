@@ -41,10 +41,9 @@ extern bool maybe_execute_builtin(const struct token *command_toks,
 				  unsigned cmd_nargs,
 				  int *status_ret);
 
-/* mysh_util.c */
-extern void mysh_error(const char *fmt, ...);
-extern void mysh_error_with_errno(const char *fmt, ...);
-extern void *xmalloc(size_t len);
+/* mysh_main.c */
+extern char **positional_parameters;
+extern unsigned int num_positional_parameters;
 
 /* mysh_parse.c */
 extern void free_tok_list(struct token *tok);
@@ -58,5 +57,12 @@ struct orig_fds {
 
 extern int undo_redirections(const struct orig_fds *orig);
 extern int do_redirections(const struct token *redirs, struct orig_fds *orig);
+
+/* mysh_util.c */
+extern void mysh_error(const char *fmt, ...);
+extern void mysh_error_with_errno(const char *fmt, ...);
+extern void *xmalloc(size_t len);
+extern void *xstrdup(const char *s);
+
 
 #endif /* _MYSH_H */
