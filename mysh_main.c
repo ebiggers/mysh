@@ -134,7 +134,8 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list)
 
 	if (!strpbrk(s->chars, whitespace_chars)) {
 		/* No whitespace in string. */
-		list_add_tail(&s->list, out_list);
+		if (s->len != 0)
+			list_add_tail(&s->list, out_list);
 		return;
 	}
 
@@ -193,6 +194,7 @@ expand_string(struct token *tok, struct list_head *out_list)
 {
 	struct string *s = xmalloc(sizeof(struct string));
 	s->chars = tok->tok_data;
+	s->len = strlen(tok->tok_data);
 	tok->tok_data = NULL;
 	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
 		s = do_param_expansion(s);
@@ -559,12 +561,13 @@ int main(int argc, char **argv)
 		in = stdin;
 
 	init_positional_params(argc + 1, argv - 1);
+	(void)set_pwd();
 
 	status = 0;
 	line = NULL;
 	while (1) {
 		if (in == stdin)
-			fputs("$ ", stdout);
+			fprintf(stdout, "%s $ ", lookup_shell_param("PWD", 3));
 		if (getline(&line, &n, in) == -1)
 			break;
 		status = execute_line(line);

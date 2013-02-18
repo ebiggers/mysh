@@ -45,13 +45,15 @@ void *xmalloc(size_t len)
 	return p;
 }
 
-void *zmalloc(size_t len)
+void *xzalloc(size_t len)
 {
 	return memset(xmalloc(len), 0, len);
 }
 
 char *xstrdup(const char *s)
 {
+	if (!s)
+		return NULL;
 	char *p = strdup(s);
 	if (!p) {
 		mysh_error("out of memory");
@@ -64,7 +66,7 @@ struct string *
 new_string(size_t len)
 {
 	struct string *s = xmalloc(sizeof(struct string));
-	s->chars = xmalloc(len + 1);
+	s->chars = xzalloc(len + 1);
 	s->len = len;
 	return s;
 }
@@ -115,6 +117,9 @@ join_strings(struct list_head *strings)
 	struct string *s, *new, *tmp;
 	size_t len = 0;
 	char *p;
+
+	if (strings->next == strings->prev) /* no-op */
+		return list_entry(strings->next, struct string, list);
 
 	list_for_each_entry(s, strings, list)
 		len += s->len;

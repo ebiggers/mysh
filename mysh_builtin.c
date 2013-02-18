@@ -32,6 +32,25 @@ out:
 	return ret;
 }
 
+static int builtin_setenv(unsigned argc, const char **argv);
+
+int set_pwd()
+{
+	const char *setenv_argv[2];
+	char *wd = getcwd(NULL, 0);
+	int ret;
+	if (wd) {
+		setenv_argv[0] = "PWD";
+		setenv_argv[1] = wd;
+		ret = builtin_setenv(2, setenv_argv);
+		free(wd);
+	} else {
+		mysh_error("getcwd()");
+		ret = 1;
+	}
+	return ret;
+}
+
 /* Change the working directory */
 static int builtin_cd(unsigned argc, const char **argv)
 {
@@ -41,7 +60,7 @@ static int builtin_cd(unsigned argc, const char **argv)
 	if (argc) {
 		dest_dir = argv[0];
 	} else {
-		dest_dir = getenv("HOME");
+		dest_dir = lookup_shell_param("HOME", 4);
 		if (!dest_dir) {
 			mysh_error("cd: HOME not set");
 			goto out;
@@ -49,8 +68,9 @@ static int builtin_cd(unsigned argc, const char **argv)
 	}
 	if (chdir(dest_dir) != 0)
 		mysh_error_with_errno("cd: %s", dest_dir);
-	else
-		ret = 0;
+	else {
+		ret = set_pwd();
+	}
 out:
 	return ret;
 }
@@ -69,6 +89,7 @@ static int builtin_setenv(unsigned argc, const char **argv)
 		ret = 1;
 	} else {
 		ret = 0;
+		insert_shell_param(argv[0], argv[1]);
 	}
 out:
 	return ret;
@@ -142,6 +163,7 @@ static int builtin_dummy(unsigned argc, const char **argv)
 	return 0;
 }
 
+static int builtin_help(unsigned argc, const char **argv);
 
 struct builtin {
 	/* Name of the command through which the builtin will be called */
@@ -151,20 +173,45 @@ struct builtin {
 	 * argv is not NULL-terminated, and argv[0] is the first argument rather
 	 * than the builtin name. */
 	int (*func)(unsigned argc, const char **argv);
+
+	/* Help text */
+	const char *help;
 };
 
 /* Table of builtins recognized by the shell */
 static const struct builtin builtins[] = {
-	{"pwd",    builtin_pwd},
-	{"cd",     builtin_cd},
-	{"setenv", builtin_setenv},
-	{"getenv", builtin_getenv},
-	{"shift",  builtin_shift},
-	{"exit",   builtin_exit},
-	{":",      builtin_dummy},
+	{"pwd",    builtin_pwd,    "pwd"},
+	{"cd",     builtin_cd,     "cd [DIR]"},
+	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
+	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
+	{"shift",  builtin_shift,  "shift [N]"},
+	{"exit",   builtin_exit,   "exit [STATUS]"},
+	{"help",   builtin_help,   "help [COMMAND]"},
+	{":",      builtin_dummy,  ":"},
 };
 
 #define NUM_BUILTINS ARRAY_SIZE(builtins)
+
+static void print_help(const struct builtin *b)
+{
+	printf("Usage: %s\n", b->help);
+}
+
+static int builtin_help(unsigned argc, const char **argv)
+{
+	size_t i;
+	if (argc) {
+		for (i = 0; i < NUM_BUILTINS; i++) {
+			if (strcmp(builtins[i].name, argv[0]) == 0) {
+				print_help(&builtins[i]);
+				return 0;
+			}
+		}
+	}
+	for (i = 0; i < NUM_BUILTINS; i++)
+		print_help(&builtins[i]);
+	return 0;
+}
 
 /* Execute a builtin command.
  *

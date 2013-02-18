@@ -63,6 +63,7 @@ struct string {
 };
 
 /* mysh_builtin.c */
+extern int set_pwd();
 extern bool maybe_execute_builtin(const struct list_head *command_toks,
 				  const struct list_head *redirs,
 				  unsigned cmd_nargs,
@@ -76,6 +77,8 @@ extern struct string *do_param_expansion(struct string *s);
 extern const char *lookup_param(const char *name, size_t len);
 extern void init_positional_params(int argc, char **argv);
 extern void init_param_map();
+extern const char *lookup_shell_param(const char *name, size_t len);
+extern void insert_shell_param(const char *name, const char *value);
 extern void destroy_positional_params();
 extern void destroy_param_map();
 
@@ -99,8 +102,8 @@ extern int do_redirections(const struct list_head *redirs, struct orig_fds *orig
 extern void mysh_error(const char *fmt, ...);
 extern void mysh_error_with_errno(const char *fmt, ...);
 extern void *xmalloc(size_t len);
+extern void *xzalloc(size_t len);
 extern char *xstrdup(const char *s);
-extern void *zmalloc(size_t len);
 extern struct string * join_strings(struct list_head *strings);
 extern void append_param(const char *name, size_t len, struct list_head *out_list);
 extern void append_string(const char *chars, size_t len, struct list_head *out_list);
