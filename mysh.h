@@ -77,8 +77,13 @@ extern struct string *do_param_expansion(struct string *s);
 extern const char *lookup_param(const char *name, size_t len);
 extern void init_positional_params(int num_params, char *param0, char **params);
 extern void init_param_map();
-extern const char *lookup_shell_param(const char *name, size_t len);
+extern const char *lookup_shell_param(const char *name);
+extern const char *lookup_shell_param_len(const char *name, size_t len);
 extern void insert_shell_param(const char *name, const char *value);
+extern int export_variable(const char *name);
+extern void insert_shell_param_len(const char *name, size_t len,
+				   const char *value);
+extern void make_param_assignment(const char *assignment);
 extern void destroy_positional_params();
 extern void destroy_param_map();
 

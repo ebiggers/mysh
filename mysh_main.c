@@ -215,16 +215,27 @@ parse_tok_list(struct token *tok,
 	       bool *async_ret,
 	       struct list_head *cmd_args,
 	       unsigned *cmd_nargs_ret,
+	       unsigned *nleading_var_assignments_ret,
 	       struct list_head *redirs)
 {
 
 	int ret;
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
+	unsigned nleading_var_assignments = 0;
+	bool leading = true;
 	while (tok->type & TOK_CLASS_STRING) {
-		LIST_HEAD(tmp_list);
-		expand_string(tok, &tmp_list);
-		list_splice_tail(&tmp_list, &string_list);
+		if (leading
+		    && (tok->type & TOK_UNQUOTED_STRING)
+		    && strchr(tok->tok_data, '='))
+		{
+			++nleading_var_assignments;
+		} else {
+			leading = false;
+			LIST_HEAD(tmp_list);
+			expand_string(tok, &tmp_list);
+			list_splice_tail(&tmp_list, &string_list);
+		}
 		tok = tok->next;
 		if (!tok) {
 			ret = 0;
@@ -236,6 +247,7 @@ parse_tok_list(struct token *tok,
 	INIT_LIST_HEAD(redirs);
 	list_splice_tail(&string_list, cmd_args);
 	*cmd_nargs_ret = list_size(cmd_args);
+	*nleading_var_assignments_ret = nleading_var_assignments;
 	goto out;
 #if 0
 	bool is_first_redirection = true;
@@ -317,6 +329,17 @@ out:
 #endif
 }
 
+static int process_var_assignments(const struct token *assignments,
+				   unsigned num_assignments)
+{
+	const struct token *tok = assignments;
+	while (num_assignments--) {
+		make_param_assignment(tok->tok_data);
+		tok = tok->next;
+	}
+	return 0;
+}
+
 static int execute_pipeline(struct token **pipe_commands,
 			    unsigned ncommands)
 {
@@ -327,6 +350,7 @@ static int execute_pipeline(struct token **pipe_commands,
 	struct list_head redir_lists[ncommands];
 	struct list_head cmd_arg_lists[ncommands];
 	unsigned cmd_nargs[ncommands];
+	unsigned nleading_var_assignments[ncommands];
 
 	unsigned cmd_idx;
 	int pipe_fds[2];
@@ -344,6 +368,7 @@ static int execute_pipeline(struct token **pipe_commands,
 				     &async, 
 				     &cmd_arg_lists[i],
 				     &cmd_nargs[i],
+				     &nleading_var_assignments[i],
 				     &redir_lists[i]);
 		if (ret)
 			goto out_free_lists;
@@ -358,6 +383,22 @@ static int execute_pipeline(struct token **pipe_commands,
 					  cmd_nargs[0], &ret))
 			goto out_free_lists;
 		/* not a builtin */
+
+		/* if there are no arguments, just process leading variable
+		 * assignments */
+		if (cmd_nargs[0] == 0) {
+			ret = process_var_assignments(pipe_commands[0],
+						      nleading_var_assignments[0]);
+			goto out_free_lists;
+		}
+	}
+
+	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
+		if (cmd_nargs[cmd_idx] == 0) {
+			mysh_error("Expected command name");
+			ret = -1;
+			goto out_free_lists;
+		}
 	}
 
 	/* Execute the commands */
@@ -533,31 +574,38 @@ int main(int argc, char **argv)
 	FILE *in;
 	char *line;
 	size_t n;
-	int status;
+	bool from_stdin = false;
 
 	set_up_signal_handlers();
 	init_param_map();
 
-	while ((c = getopt(argc, argv, "c:")) != -1) {
-		if (c == 'c') {
+	while ((c = getopt(argc, argv, "c:s")) != -1) {
+		switch (c) {
+		case 'c':
+			/* execute string provided on the command line */
 			init_positional_params(argc - optind, argv[0], &argv[optind]);
-			status = execute_line(optarg);
-		} else {
+			last_exit_status = execute_line(optarg);
+			goto out;
+		case 's':
+			/* read from stdin */
+			from_stdin = true;
+			break;
+		default:
 			mysh_error("invalid option");
-			status = 2;
+			last_exit_status = 2;
+			goto out;
 		}
-		goto out;
 	}
 	argc -= optind;
 	argv += optind;
 
 	(void)set_pwd();
 
-	if (argc) {
+	if (argc && !from_stdin) {
 		in = fopen(argv[0], "rb");
 		if (!in) {
 			mysh_error_with_errno("can't open %s", argv[0]);
-			status = 1;
+			last_exit_status = -1;
 			goto out;
 		}
 		init_positional_params(argc - 1, argv[-1], argv + 1);
@@ -566,25 +614,24 @@ int main(int argc, char **argv)
 		in = stdin;
 	}
 
-	status = 0;
+	last_exit_status = 0;
 	line = NULL;
 	while (1) {
 		if (in == stdin)
-			fprintf(stdout, "%s $ ", lookup_shell_param("PWD", 3));
+			fprintf(stdout, "%s $ ", lookup_shell_param("PWD"));
 		if (getline(&line, &n, in) == -1)
 			break;
-		status = execute_line(line);
+		last_exit_status = execute_line(line);
 	}
 
 	if (ferror(in)) {
-		mysh_error("error reading from %s",
-			   (argc == 0 ? "stdin" : argv[0]));
-		status = 1;
+		mysh_error_with_errno("error reading input");
+		last_exit_status = -1;
 	}
 	fclose(in);
 	free(line);
 out:
 	destroy_positional_params();
 	destroy_param_map();
-	return status;
+	return last_exit_status;
 }

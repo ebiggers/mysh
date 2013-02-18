@@ -64,10 +64,35 @@ static void insert_param(struct param_trie_node *node,
 	}
 }
 
+void insert_shell_param_len(const char *name, size_t len, const char *value)
+{
+	insert_param(&param_trie_root, name, len, xstrdup(value));
+}
+
 void insert_shell_param(const char *name, const char *value)
 {
 	insert_param(&param_trie_root, name, strlen(name), xstrdup(value));
 }
+
+void make_param_assignment(const char *assignment)
+{
+	const char *equals = strchr(assignment, '=');
+	insert_shell_param_len(assignment, equals - assignment, equals + 1);
+}
+
+int export_variable(const char *name)
+{
+	const char *value = lookup_shell_param(name);
+	int ret;
+	if (value)
+		ret = setenv(name, value, 1);
+	else
+		ret = unsetenv(name);
+	if (ret)
+		mysh_error_with_errno("export_variable()");
+	return ret;
+}
+
 
 static void init_trie_slot_tab()
 {
@@ -152,7 +177,7 @@ shell_param_char_type(char c)
 }
 
 const char *
-lookup_shell_param(const char *name, size_t len)
+lookup_shell_param_len(const char *name, size_t len)
 {
 	struct param_trie_node *node = &param_trie_root;
 	while (len--) {
@@ -167,11 +192,14 @@ lookup_shell_param(const char *name, size_t len)
 }
 
 const char *
+lookup_shell_param(const char *name)
+{
+	return lookup_shell_param_len(name, strlen(name));
+}
+
+const char *
 lookup_param(const char *name, size_t len)
 {
-	if (len == 0)
-		return NULL;
-
 	static char buf[20];
 
 	unsigned char char_type = shell_param_char_type(*name);
@@ -198,7 +226,7 @@ lookup_param(const char *name, size_t len)
 			return buf;
 		}
 	} else {
-		return lookup_shell_param(name, len);
+		return lookup_shell_param_len(name, len);
 	}
 	return NULL;
 }
@@ -279,7 +307,9 @@ void init_positional_params(int num_params, char *param0, char **params)
 void destroy_positional_params()
 {
 	unsigned i;
-	for (i = 0; i <= num_positional_parameters; i++)
-		free(positional_parameters[i]);
-	free(positional_parameters);
+	if (positional_parameters) {
+		for (i = 0; i <= num_positional_parameters; i++)
+			free(positional_parameters[i]);
+		free(positional_parameters);
+	}
 }

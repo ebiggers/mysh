@@ -12,45 +12,6 @@
 
 extern const char **environ;
 
-/* Print the working directory */
-static int builtin_pwd(unsigned argc, const char **argv)
-{
-	char *buf;
-	int ret = 1;
-
-	buf = getcwd(NULL, 0);
-	if (!buf) {
-		mysh_error_with_errno("pwd: can't get current working directory");
-		goto out;
-	}
-	if (puts(buf) == EOF)
-		mysh_error_with_errno("pwd: write error");
-	else
-		ret = 0;
-	free(buf);
-out:
-	return ret;
-}
-
-static int builtin_setenv(unsigned argc, const char **argv);
-
-int set_pwd()
-{
-	const char *setenv_argv[2];
-	char *wd = getcwd(NULL, 0);
-	int ret;
-	if (wd) {
-		setenv_argv[0] = "PWD";
-		setenv_argv[1] = wd;
-		ret = builtin_setenv(2, setenv_argv);
-		free(wd);
-	} else {
-		mysh_error("getcwd()");
-		ret = 1;
-	}
-	return ret;
-}
-
 /* Change the working directory */
 static int builtin_cd(unsigned argc, const char **argv)
 {
@@ -60,7 +21,7 @@ static int builtin_cd(unsigned argc, const char **argv)
 	if (argc) {
 		dest_dir = argv[0];
 	} else {
-		dest_dir = lookup_shell_param("HOME", 4);
+		dest_dir = lookup_shell_param("HOME");
 		if (!dest_dir) {
 			mysh_error("cd: HOME not set");
 			goto out;
@@ -75,23 +36,45 @@ out:
 	return ret;
 }
 
-/* Set the value of an environmental variable */
-static int builtin_setenv(unsigned argc, const char **argv)
+/* Dummy command */
+static int builtin_dummy(unsigned argc, const char **argv)
 {
+	return 0;
+}
+
+/* Exit the shell */
+static int builtin_exit(unsigned argc, const char **argv)
+{
+	exit((argc) ? atoi(argv[0]) : 0);
+}
+
+static int do_export(const char *var)
+{
+	const char *name_end;
+	const char *equals;
 	int ret;
-	if (argc < 2) {
-		mysh_error("usage: setenv VARIABLE VALUE");
-		ret = 2;
-		goto out;
+
+	equals = strchr(var, '=');
+	if (equals){ 
+		make_param_assignment(var);
+		*(char*)equals = '\0';
 	}
-	if (setenv(argv[0], argv[1], 1) != 0) {
-		mysh_error_with_errno("setenv %s", argv[0]);
-		ret = 1;
-	} else {
-		ret = 0;
-		insert_shell_param(argv[0], argv[1]);
+	ret = export_variable(var);
+	if (equals)
+		*(char*)equals = '=';
+	return ret;
+}
+
+/* Export environmental variables */
+static int builtin_export(unsigned argc, const char **argv)
+{
+	int ret = 0;
+	unsigned i;
+	for (i = 0; i < argc; i++) {
+		ret = do_export(argv[i]);
+		if (ret)
+			break;
 	}
-out:
 	return ret;
 }
 
@@ -120,6 +103,48 @@ static int builtin_getenv(unsigned argc, const char **argv)
 	}
 	return ret;
 }
+
+/* Print the working directory */
+static int builtin_pwd(unsigned argc, const char **argv)
+{
+	char *buf;
+	int ret = 1;
+
+	buf = getcwd(NULL, 0);
+	if (!buf) {
+		mysh_error_with_errno("pwd: can't get current working directory");
+		goto out;
+	}
+	if (puts(buf) == EOF)
+		mysh_error_with_errno("pwd: write error");
+	else
+		ret = 0;
+	free(buf);
+out:
+	return ret;
+}
+
+
+/* Set the value of an environmental variable */
+static int builtin_setenv(unsigned argc, const char **argv)
+{
+	int ret;
+	if (argc < 2) {
+		mysh_error("usage: setenv VARIABLE VALUE");
+		ret = 2;
+		goto out;
+	}
+	if (setenv(argv[0], argv[1], 1) != 0) {
+		mysh_error_with_errno("setenv %s", argv[0]);
+		ret = 1;
+	} else {
+		ret = 0;
+		insert_shell_param(argv[0], argv[1]);
+	}
+out:
+	return ret;
+}
+
 
 static int builtin_shift(unsigned argc, const char **argv)
 {
@@ -151,20 +176,6 @@ static int builtin_shift(unsigned argc, const char **argv)
 	return 0;
 }
 
-/* Exit the shell */
-static int builtin_exit(unsigned argc, const char **argv)
-{
-	exit((argc) ? atoi(argv[0]) : 0);
-}
-
-/* Dummy command */
-static int builtin_dummy(unsigned argc, const char **argv)
-{
-	return 0;
-}
-
-static int builtin_help(unsigned argc, const char **argv);
-
 struct builtin {
 	/* Name of the command through which the builtin will be called */
 	const char *name;
@@ -178,16 +189,20 @@ struct builtin {
 	const char *help;
 };
 
+
+static int builtin_help(unsigned argc, const char **argv);
+
 /* Table of builtins recognized by the shell */
 static const struct builtin builtins[] = {
-	{"pwd",    builtin_pwd,    "pwd"},
-	{"cd",     builtin_cd,     "cd [DIR]"},
-	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
-	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
-	{"shift",  builtin_shift,  "shift [N]"},
-	{"exit",   builtin_exit,   "exit [STATUS]"},
-	{"help",   builtin_help,   "help [COMMAND]"},
 	{":",      builtin_dummy,  ":"},
+	{"cd",     builtin_cd,     "cd [DIR]"},
+	{"exit",   builtin_exit,   "exit [STATUS]"},
+	{"export", builtin_export, "export VARIABLE[=VALUE]..."},
+	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
+	{"help",   builtin_help,   "help [COMMAND]"},
+	{"pwd",    builtin_pwd,    "pwd"},
+	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
+	{"shift",  builtin_shift,  "shift [N]"},
 };
 
 #define NUM_BUILTINS ARRAY_SIZE(builtins)
@@ -304,3 +319,21 @@ bool maybe_execute_builtin(const struct list_head *command_toks,
 	/* Not a builtin command */
 	return false;
 }
+
+int set_pwd()
+{
+	const char *setenv_argv[2];
+	char *wd = getcwd(NULL, 0);
+	int ret;
+	if (wd) {
+		setenv_argv[0] = "PWD";
+		setenv_argv[1] = wd;
+		ret = builtin_setenv(2, setenv_argv);
+		free(wd);
+	} else {
+		mysh_error("getcwd()");
+		ret = 1;
+	}
+	return ret;
+}
+

@@ -110,7 +110,7 @@ static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
 				if (*p == '\\') {
 					escape = true;
 					continue;
-				} else
+				} else if (!(*p == '#' && p != *pp && *(p - 1) == '$'))
 					break;
 			}
 		}
