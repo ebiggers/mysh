@@ -75,7 +75,7 @@ extern int last_exit_status;
 /* mysh_param.c */
 extern struct string *do_param_expansion(struct string *s);
 extern const char *lookup_param(const char *name, size_t len);
-extern void init_positional_params(int argc, char **argv);
+extern void init_positional_params(int num_params, char *param0, char **params);
 extern void init_param_map();
 extern const char *lookup_shell_param(const char *name, size_t len);
 extern void insert_shell_param(const char *name, const char *value);

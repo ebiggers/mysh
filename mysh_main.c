@@ -540,7 +540,7 @@ int main(int argc, char **argv)
 
 	while ((c = getopt(argc, argv, "c:")) != -1) {
 		if (c == 'c') {
-			init_positional_params(argc - optind, &argv[optind]);
+			init_positional_params(argc - optind, argv[0], &argv[optind]);
 			status = execute_line(optarg);
 		} else {
 			mysh_error("invalid option");
@@ -550,6 +550,9 @@ int main(int argc, char **argv)
 	}
 	argc -= optind;
 	argv += optind;
+
+	(void)set_pwd();
+
 	if (argc) {
 		in = fopen(argv[0], "rb");
 		if (!in) {
@@ -557,11 +560,11 @@ int main(int argc, char **argv)
 			status = 1;
 			goto out;
 		}
-	} else
+		init_positional_params(argc - 1, argv[-1], argv + 1);
+	} else {
+		init_positional_params(argc, argv[-1], argv);
 		in = stdin;
-
-	init_positional_params(argc + 1, argv - 1);
-	(void)set_pwd();
+	}
 
 	status = 0;
 	line = NULL;

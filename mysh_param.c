@@ -260,20 +260,20 @@ do_param_expansion(struct string *s)
 		s->len = 0;
 		s->chars[0] = '\0';
 		return s;
-	} else
+	} else {
+		free_string(s);
 		return join_strings(&string_list);
+	}
 }
 
-void init_positional_params(int argc, char **argv)
+void init_positional_params(int num_params, char *param0, char **params)
 {
 	unsigned i;
-	if (argc <= 0)
-		num_positional_parameters = 0;
-	else
-		num_positional_parameters = argc - 1;
+	num_positional_parameters = num_params;
 	positional_parameters = xmalloc((num_positional_parameters + 1) * sizeof(char *));
-	for (i = 0; i <= num_positional_parameters; i++)
-		positional_parameters[i] = xstrdup(argv[i]);
+	positional_parameters[0] = xstrdup(param0);
+	for (i = 0; i < num_positional_parameters; i++)
+		positional_parameters[i + 1] = xstrdup(params[i]);
 }
 
 void destroy_positional_params()
