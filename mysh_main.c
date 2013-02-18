@@ -125,45 +125,77 @@ fail:
 
 
 
+/*
+ * Split an unquoted string around whitespace produced by parameter expansion.
+ *
+ * @s:               The string to split.
+ *
+ * @out_list:        An empty list into which the split strings will be written.
+ *                   If the string is entirely whitespace produced by parameter
+ *                   expansion, then the resulting list will remain empty.
+ *
+ * @param_char_map:  A map from character position to booleans
+ *                   that indicate whether the character was produced by
+ *                   parameter expansion (1) or not (0).
+ *
+ * @leading_whitespace:
+ *                   Set to %true if the string has leading whitespace that was
+ *                   produced by parameter expansion; set to %false otherwise.
+ *
+ * @trailing_whitespace:
+ *                   Set to %true if the string has trailing whitespace that was
+ *                   produced by parameter expansion; set to %false otherwise.
+ */
 static void
 split_string_around_whitespace(struct string *s, struct list_head *out_list,
+			       const unsigned char *param_char_map,
 			       bool *leading_whitespace, bool *trailing_whitespace)
 {
-	const char *whitespace_chars = " \r\t\n";
-	const char *strstart;
-	const char *strend;
+	const char *whitespace_chars = " \r\t\n\v\f";
+	const char *chars;
 	struct string *s2;
+	size_t i;
 
-	*leading_whitespace = false;
+	mysh_assert(param_char_map != NULL);
+	mysh_assert(list_empty(out_list));
+
 	*trailing_whitespace = false;
 	if (!strpbrk(s->chars, whitespace_chars)) {
 		/* No whitespace in string. */
+		*leading_whitespace = false;
 		if (s->len != 0)
 			list_add_tail(&s->list, out_list);
 		return;
 	}
 
-	strstart = s->chars;
-	*leading_whitespace = (isspace(*strstart) != 0);
+	chars = s->chars;
+	i = 0;
+	*leading_whitespace = isspace(chars[i] != 0) && param_char_map[i] != 0;
 	while (1) {
-		while (isspace(*strstart))
-			strstart++;
+		/* skip leading whitespace, including only whitespace that was
+		 * produced by parameter expansion  */
+		size_t j = i;
+		while (isspace(chars[i]) && param_char_map[i] != 0)
+			i++;
 
-		if (*strstart == '\0') {
-			*trailing_whitespace = isspace(*(strstart - 1)) != 0;
+		if (chars[i] == '\0') {
+			*trailing_whitespace = (i != j);
+			free_string(s);
 			return;
 		}
+		j = i;
 
-		strend = strpbrk(strstart, whitespace_chars);
+		/* skip non-whitespace and whitespace not produced by parameter
+		 * expansion */
+		while (chars[i] != '\0' && (!isspace(chars[i]) || !param_char_map[i]))
+			i++;
 
-		s2 = new_string_with_data(strstart, strend - strstart);
+		s2 = new_string_with_data(&chars[j], i - j);
 		s2->flags = s->flags;
-		if (strstart != s->chars) {
-			s2->flags |= (STRING_FLAG_WORD_SPLIT |
-				      STRING_FLAG_PRECEDING_WHITESPACE);
-		}
+		if (i != 0)
+			s2->flags |= (STRING_FLAG_WORD_SPLIT | STRING_FLAG_PRECEDING_WHITESPACE);
 		list_add_tail(&s2->list, out_list);
-		strstart = strend + 1;
+		i++;
 	}
 }
 
@@ -191,7 +223,7 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
  		flags = s->flags;
 		free_string(s);
 		for (i = 0; i < glob_buf.gl_pathc; i++) {
-			s2 = new_string_with_data(glob_buf.gl_pathv[i], 
+			s2 = new_string_with_data(glob_buf.gl_pathv[i],
 						  strlen(glob_buf.gl_pathv[i]));
 			s2->flags = flags | STRING_FLAG_FILENAME_EXPANDED;
 			list_add_tail(&s2->list, out_list);
@@ -224,6 +256,10 @@ expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 {
 	struct string *s;
 	bool leading_whitespace, trailing_whitespace;
+	unsigned char *param_char_map;
+
+	mysh_assert(tok->type & TOK_CLASS_STRING);
+	mysh_assert(list_empty(out_list));
 
  	s = xmalloc(sizeof(struct string));
 	s->chars = tok->tok_data;
@@ -244,9 +280,10 @@ expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 	}
 	tok->tok_data = NULL;
 	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
-		s = do_param_expansion(s);
-	if (tok->type & TOK_UNQUOTED_STRING) {
+		s = do_param_expansion(s, &param_char_map);
+	if (tok->type & TOK_UNQUOTED_STRING && param_char_map) {
 		split_string_around_whitespace(s, out_list,
+					       param_char_map,
 					       &leading_whitespace,
 					       &trailing_whitespace);
 	} else {
@@ -301,21 +338,12 @@ parse_tok_list(struct token *tok,
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
 	unsigned nleading_var_assignments = 0;
-	/*bool leading = true;*/
 	while (tok->type & TOK_CLASS_STRING) {
-		/*if (leading*/
-		    /*&& (tok->type & TOK_UNQUOTED_STRING)*/
-		    /*&& strchr(tok->tok_data, '='))*/
-		/*{*/
-			/*++nleading_var_assignments;*/
-		/*} else {*/
-			/*leading = false;*/
-			LIST_HEAD(tmp_list);
-			ret = expand_params_and_word_split(tok, &tmp_list);
-			if (ret != 0)
-				goto out_free_string_lists;
-			list_splice_tail(&tmp_list, &string_list);
-		/*}*/
+		LIST_HEAD(tmp_list);
+		ret = expand_params_and_word_split(tok, &tmp_list);
+		if (ret != 0)
+			goto out_free_string_lists;
+		list_splice_tail(&tmp_list, &string_list);
 		tok = tok->next;
 		if (!tok) {
 			ret = 0;
@@ -447,7 +475,7 @@ static int execute_pipeline(struct token **pipe_commands,
 	for (i = 0; i < ncommands; i++) {
 		ret = parse_tok_list(pipe_commands[i],
 				     (i == ncommands - 1),
-				     &async, 
+				     &async,
 				     &cmd_arg_lists[i],
 				     &cmd_nargs[i],
 				     &nleading_var_assignments[i],
@@ -665,7 +693,7 @@ int main(int argc, char **argv)
 		switch (c) {
 		case 'c':
 			/* execute string provided on the command line */
-			init_positional_params(argc - optind, argv[0], &argv[optind]);
+			set_positional_params(argc - optind, argv[0], &argv[optind]);
 			last_exit_status = execute_line(optarg);
 			goto out;
 		case 's':
@@ -690,9 +718,9 @@ int main(int argc, char **argv)
 			last_exit_status = -1;
 			goto out;
 		}
-		init_positional_params(argc - 1, argv[-1], argv + 1);
+		set_positional_params(argc - 1, argv[-1], argv + 1);
 	} else {
-		init_positional_params(argc, argv[-1], argv);
+		set_positional_params(argc, argv[-1], argv);
 		in = stdin;
 	}
 

@@ -3,10 +3,13 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <assert.h>
 #include "list.h"
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 #define ZERO_ARRAY(A) memset(A, 0, sizeof(A))
+
+#define mysh_assert assert
 
 enum token_type {
 	TOK_UNQUOTED_STRING      = 0x1,
@@ -70,6 +73,7 @@ struct string {
 #define STRING_FLAG_PRECEDING_WHITESPACE	0x10
 #define STRING_FLAG_WORD_SPLIT			0x20
 #define STRING_FLAG_FILENAME_EXPANDED		0x40
+#define STRING_FLAG_WAS_PARAM			0x80
 
 /* mysh_builtin.c */
 extern int set_pwd();
@@ -82,9 +86,11 @@ extern bool maybe_execute_builtin(const struct list_head *command_toks,
 extern int last_exit_status;
 
 /* mysh_param.c */
-extern struct string *do_param_expansion(struct string *s);
+extern struct string *
+do_param_expansion(struct string *s, unsigned char **param_char_map);
+
 extern const char *lookup_param(const char *name, size_t len);
-extern void init_positional_params(int num_params, char *param0, char **params);
+extern void set_positional_params(int num_params, char *param0, char **params);
 extern void init_param_map();
 extern const char *lookup_shell_param(const char *name);
 extern const char *lookup_shell_param_len(const char *name, size_t len);
@@ -119,7 +125,6 @@ extern void *xmalloc(size_t len);
 extern void *xzalloc(size_t len);
 extern char *xstrdup(const char *s);
 extern struct string * join_strings(struct list_head *strings);
-extern void append_string(const char *chars, size_t len, struct list_head *out_list);
 extern struct string *new_string(size_t len);
 extern struct string *new_string_with_data(const char *chars, size_t len);
 extern void free_string(struct string *s);

@@ -99,13 +99,6 @@ free_string_list(struct list_head *string_list)
 }
 
 
-void
-append_string(const char *chars, size_t len, struct list_head *out_list)
-{
-	struct string *s = new_string_with_data(chars, len);
-	list_add_tail(&s->list, out_list);
-}
-
 struct string *
 join_strings(struct list_head *strings)
 {

@@ -232,31 +232,86 @@ lookup_param(const char *name, size_t len)
 }
 
 static void
-append_param(const char *name, size_t len, struct list_head *out_list)
+append_string(const char *chars, size_t len, struct list_head *out_list)
 {
-	const char *value = lookup_param(name, len);
-	if (value)
-		append_string(value, strlen(value), out_list);
+	struct string *s = new_string_with_data(chars, len);
+	list_add_tail(&s->list, out_list);
 }
 
 
+static void
+append_param(const char *name, size_t len, struct list_head *out_list)
+{
+	const char *value = lookup_param(name, len);
+	if (value) {
+		struct string *s = new_string_with_data(value, strlen(value));
+		list_add_tail(&s->list, out_list);
+		s->flags |= STRING_FLAG_WAS_PARAM;
+	}
+}
+
+
+/*
+ * Perform parameter expansion on a string by replacing sequences beginning with
+ * a '$' character with the corresponding expansion, or "" if the corresponding
+ * parameter is empty or unset.
+ *
+ * @s:  The string to expand.  It may be empty, but it may not be NULL.
+ *
+ * @param_char_map:  A pointer to an unsigned char * in which will be written a
+ *                   pointer to a map from character indices to boolean values
+ *                   indicating whether the corresponding character was produced
+ *                   by parameter expansion (1) or was present in the original
+ *                   string (0).  If parameter expansion was not performed or
+ *                   the string expanded to length 0, NULL will be written into
+ *                   the location instead.
+ *
+ * The return value is the expanded string.  The caller is responsible for its
+ * memory; the caller is no longer responsible for the memory for @s, which is
+ * freed if it's not returned as the resulting string (due to no parameter
+ * expansion occurring).  The expanded string will have the flag
+ * STRING_FLAG_PARAM_EXPANDED set, in addition to any flags that were set on @s.
+ */
 struct string *
-do_param_expansion(struct string *s)
+do_param_expansion(struct string *s, unsigned char **param_char_map)
 {
 	const char *var_begin;
 	const char *dollar_sign;
 	const char *var_end;
 	unsigned char mask;
 	unsigned char char_type;
-	LIST_HEAD(string_list);
+	struct string *tmp;
+	size_t len;
+	struct list_head string_list;
 
 	var_end = s->chars;
 	dollar_sign = strchr(var_end, '$');
-	if (!dollar_sign) /* No parameter expansion to be done. */
+	if (!dollar_sign) { 
+		/* No parameter expansion to be done.
+		 * Return the original string. */
+		*param_char_map = NULL; 
 		return s;
+	}
+
+	/* As a result of doing the expansions, we will produce a list of
+	 * strings in the list @string_list, each of which will correspond to
+	 * either literal characters or to characters that were produced as a
+	 * result of a parameter expansion.  These strings are later joined
+	 * together to produce the returned, expanded string. */
+	INIT_LIST_HEAD(&string_list);
 	do {
+		/* Append the literal characters (if any) from after the end of
+		 * the previous variable (or the beginning of the string) up
+		 * until the dollar sign. */
 		if (dollar_sign != var_end)
 			append_string(var_end, dollar_sign - var_end, &string_list);
+
+		/* Parse the parameter name.  There are several cases; for
+		 * example, the parameter may be specified as ${foo} rather than
+		 * $foo.  Parameters beginning with a number are positional
+		 * parameters, so they are parsed up until the first non-digit
+		 * or closing '}'.  Any invalid sequences, such as the missing
+		 * closing '}', are just output literally. */
 		var_begin = dollar_sign + 1;
 		var_end = var_begin;
 		if (*var_end == '{')
@@ -286,21 +341,57 @@ do_param_expansion(struct string *s)
 					var_begin++;
 					var_end++;
 				}
+			} else {
+				if (*var_begin == '{') {
+					/* missing closing brace */
+					var_end = var_begin;
+				}
 			}
-			append_param(var_begin, var_end - var_begin, &string_list);
+			/* The parameter name (or special character, or
+			 * positional parameter) begins at var_begin and
+			 * continues for (var_end - var_begin characters).  Look
+			 * it up and append it to the string list. */
+			if (var_end - var_begin != 0)
+				append_param(var_begin, var_end - var_begin,
+					     &string_list);
 		}
 	} while ((dollar_sign = strchr(var_end, '$')));
+
+	/* Append any remaining literal characters */
 	if (*var_end)
 		append_string(var_end, strlen(var_end), &string_list);
-	if (list_empty(&string_list)) {
-		/* The expansions produced the empty string */
+
+	/* Sum the total length of the expanded string */
+	len = 0;
+	list_for_each_entry(tmp, &string_list, list)
+		len += tmp->len;
+	if (len == 0) {
+		/* The expansions produced the empty string.  Return the
+		 * original string.  */
+		free_string_list(&string_list);
 		s->len = 0;
 		s->chars[0] = '\0';
+		*param_char_map = NULL;
 	} else {
 		/* The expansions produced one or more strings, which now need
-		 * to be joined. */
-		int flags = s->flags;
+		 * to be joined.  The original string that was passed in must be
+		 * freed. */
+		int flags;
+		size_t pos;
+
+		flags = s->flags;
 		free_string(s);
+		*param_char_map = xzalloc(len);
+		pos = 0;
+		list_for_each_entry(tmp, &string_list, list) {
+			if (tmp->flags & STRING_FLAG_WAS_PARAM) {
+				size_t i;
+				for (i = 0; i < tmp->len; i++)
+					(*param_char_map)[pos + i] = 1;
+			}
+			pos += tmp->len;
+
+		}
 		s = join_strings(&string_list);
 		s->flags = flags;
 	}
@@ -308,9 +399,10 @@ do_param_expansion(struct string *s)
 	return s;
 }
 
-void init_positional_params(int num_params, char *param0, char **params)
+void set_positional_params(int num_params, char *param0, char **params)
 {
 	unsigned i;
+	destroy_positional_params();
 	num_positional_parameters = num_params;
 	positional_parameters = xmalloc((num_positional_parameters + 1) * sizeof(char *));
 	positional_parameters[0] = xstrdup(param0);
