@@ -59,8 +59,17 @@ struct redirection {
 struct string {
 	char *chars;
 	size_t len;
+	int flags;
 	struct list_head list;
 };
+
+#define STRING_FLAG_UNQUOTED			0x1
+#define STRING_FLAG_DOUBLE_QUOTED		0x2
+#define STRING_FLAG_SINGLE_QUOTED		0x4
+#define STRING_FLAG_PARAM_EXPANDED		0x8
+#define STRING_FLAG_PRECEDING_WHITESPACE	0x10
+#define STRING_FLAG_WORD_SPLIT			0x20
+#define STRING_FLAG_FILENAME_EXPANDED		0x40
 
 /* mysh_builtin.c */
 extern int set_pwd();
@@ -110,7 +119,6 @@ extern void *xmalloc(size_t len);
 extern void *xzalloc(size_t len);
 extern char *xstrdup(const char *s);
 extern struct string * join_strings(struct list_head *strings);
-extern void append_param(const char *name, size_t len, struct list_head *out_list);
 extern void append_string(const char *chars, size_t len, struct list_head *out_list);
 extern struct string *new_string(size_t len);
 extern struct string *new_string_with_data(const char *chars, size_t len);

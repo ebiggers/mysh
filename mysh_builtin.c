@@ -50,7 +50,6 @@ static int builtin_exit(unsigned argc, const char **argv)
 
 static int do_export(const char *var)
 {
-	const char *name_end;
 	const char *equals;
 	int ret;
 

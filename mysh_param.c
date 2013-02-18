@@ -231,6 +231,14 @@ lookup_param(const char *name, size_t len)
 	return NULL;
 }
 
+static void
+append_param(const char *name, size_t len, struct list_head *out_list)
+{
+	const char *value = lookup_param(name, len);
+	if (value)
+		append_string(value, strlen(value), out_list);
+}
+
 
 struct string *
 do_param_expansion(struct string *s)
@@ -244,7 +252,7 @@ do_param_expansion(struct string *s)
 
 	var_end = s->chars;
 	dollar_sign = strchr(var_end, '$');
-	if (!dollar_sign)
+	if (!dollar_sign) /* No parameter expansion to be done. */
 		return s;
 	do {
 		if (dollar_sign != var_end)
@@ -285,13 +293,19 @@ do_param_expansion(struct string *s)
 	if (*var_end)
 		append_string(var_end, strlen(var_end), &string_list);
 	if (list_empty(&string_list)) {
+		/* The expansions produced the empty string */
 		s->len = 0;
 		s->chars[0] = '\0';
-		return s;
 	} else {
+		/* The expansions produced one or more strings, which now need
+		 * to be joined. */
+		int flags = s->flags;
 		free_string(s);
-		return join_strings(&string_list);
+		s = join_strings(&string_list);
+		s->flags = flags;
 	}
+	s->flags |= STRING_FLAG_PARAM_EXPANDED;
+	return s;
 }
 
 void init_positional_params(int num_params, char *param0, char **params)

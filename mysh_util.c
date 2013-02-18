@@ -68,6 +68,7 @@ new_string(size_t len)
 	struct string *s = xmalloc(sizeof(struct string));
 	s->chars = xzalloc(len + 1);
 	s->len = len;
+	s->flags = 0;
 	return s;
 }
 
@@ -91,8 +92,10 @@ void
 free_string_list(struct list_head *string_list)
 {
 	struct string *s, *tmp;
-	list_for_each_entry_safe(s, tmp, string_list, list)
+	list_for_each_entry_safe(s, tmp, string_list, list) {
+		list_del(&s->list);
 		free_string(s);
+	}
 }
 
 
@@ -101,14 +104,6 @@ append_string(const char *chars, size_t len, struct list_head *out_list)
 {
 	struct string *s = new_string_with_data(chars, len);
 	list_add_tail(&s->list, out_list);
-}
-
-void
-append_param(const char *name, size_t len, struct list_head *out_list)
-{
-	const char *value = lookup_param(name, len);
-	if (value)
-		append_string(value, strlen(value), out_list);
 }
 
 struct string *

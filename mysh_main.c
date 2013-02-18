@@ -126,12 +126,16 @@ fail:
 
 
 static void
-split_string_around_whitespace(struct string *s, struct list_head *out_list)
+split_string_around_whitespace(struct string *s, struct list_head *out_list,
+			       bool *leading_whitespace, bool *trailing_whitespace)
 {
 	const char *whitespace_chars = " \r\t\n";
 	const char *strstart;
 	const char *strend;
+	struct string *s2;
 
+	*leading_whitespace = false;
+	*trailing_whitespace = false;
 	if (!strpbrk(s->chars, whitespace_chars)) {
 		/* No whitespace in string. */
 		if (s->len != 0)
@@ -140,73 +144,147 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list)
 	}
 
 	strstart = s->chars;
+	*leading_whitespace = (isspace(*strstart) != 0);
 	while (1) {
 		while (isspace(*strstart))
 			strstart++;
 
-		if (*strstart == '\0')
+		if (*strstart == '\0') {
+			*trailing_whitespace = isspace(*(strstart - 1)) != 0;
 			return;
+		}
 
 		strend = strpbrk(strstart, whitespace_chars);
-		append_string(strstart, strend - strstart, out_list);
+
+		s2 = new_string_with_data(strstart, strend - strstart);
+		s2->flags = s->flags;
+		if (strstart != s->chars) {
+			s2->flags |= (STRING_FLAG_WORD_SPLIT |
+				      STRING_FLAG_PRECEDING_WHITESPACE);
+		}
+		list_add_tail(&s2->list, out_list);
 		strstart = strend + 1;
 	}
 }
 
-static void
+static int
 string_do_filename_expansion(struct string *s, struct list_head *out_list)
 {
 	int ret;
 	glob_t glob_buf;
 
 	ret = glob(s->chars,
-		   GLOB_NOESCAPE | GLOB_TILDE | GLOB_NOCHECK | GLOB_BRACE,
+		   GLOB_NOESCAPE | GLOB_TILDE | GLOB_BRACE,
 		   NULL, &glob_buf);
 	if (ret) {
-		mysh_error_with_errno("glob()");
-		list_add_tail(&s->list, out_list);
+		if (ret == GLOB_NOMATCH) {
+			list_add_tail(&s->list, out_list);
+		} else {
+			mysh_error_with_errno("glob()");
+			return -1;
+		}
 	} else {
 		size_t i;
+		int flags;
+		struct string *s2;
 
+ 		flags = s->flags;
 		free_string(s);
 		for (i = 0; i < glob_buf.gl_pathc; i++) {
-			append_string(glob_buf.gl_pathv[i], 
-				      strlen(glob_buf.gl_pathv[i]),
-				      out_list);
+			s2 = new_string_with_data(glob_buf.gl_pathv[i], 
+						  strlen(glob_buf.gl_pathv[i]));
+			s2->flags = flags | STRING_FLAG_FILENAME_EXPANDED;
+			list_add_tail(&s2->list, out_list);
 		}
 		globfree(&glob_buf);
 	}
+	return 0;
 }
 
-static void
+static int
 do_filename_expansion(struct list_head *string_list)
 {
 	struct string *s, *tmp;
+	int ret;
+
 	LIST_HEAD(new_list);
 	list_for_each_entry_safe(s, tmp, string_list, list)
-		string_do_filename_expansion(s, &new_list);
+		ret |= string_do_filename_expansion(s, &new_list);
 	INIT_LIST_HEAD(string_list);
-	list_splice_tail(&new_list, string_list);
+	if (ret)
+		free_string_list(&new_list);
+	else
+		list_splice_tail(&new_list, string_list);
+	return ret;
 }
 
-static void
-expand_string(struct token *tok, struct list_head *out_list)
+/* Do parameter expansion and word splitting */
+static int
+expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 {
-	struct string *s = xmalloc(sizeof(struct string));
+	struct string *s;
+	bool leading_whitespace, trailing_whitespace;
+
+ 	s = xmalloc(sizeof(struct string));
 	s->chars = tok->tok_data;
 	s->len = strlen(tok->tok_data);
+	s->flags = 0;
+	switch (tok->type) {
+	case TOK_UNQUOTED_STRING:
+		s->flags |= STRING_FLAG_UNQUOTED;
+		break;
+	case TOK_DOUBLE_QUOTED_STRING:
+		s->flags |= STRING_FLAG_DOUBLE_QUOTED;
+		break;
+	case TOK_SINGLE_QUOTED_STRING:
+		s->flags |= STRING_FLAG_SINGLE_QUOTED;
+		break;
+	default:
+		break;
+	}
 	tok->tok_data = NULL;
 	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
 		s = do_param_expansion(s);
-
-	INIT_LIST_HEAD(out_list);
-	if (tok->type & TOK_UNQUOTED_STRING)
-		split_string_around_whitespace(s, out_list);
-	else
+	if (tok->type & TOK_UNQUOTED_STRING) {
+		split_string_around_whitespace(s, out_list,
+					       &leading_whitespace,
+					       &trailing_whitespace);
+	} else {
 		list_add_tail(&s->list, out_list);
+		leading_whitespace = false;
+		trailing_whitespace = false;
+	}
+	if ((tok->preceded_by_whitespace || leading_whitespace) &&
+	    !list_empty(out_list))
+	{
+		list_entry(out_list->next, struct string, list)->flags |=
+			STRING_FLAG_PRECEDING_WHITESPACE;
+	}
+	if (tok->next != NULL && trailing_whitespace)
+		tok->next->preceded_by_whitespace = true;
+	return 0;
+}
 
-	if (tok->type & TOK_UNQUOTED_STRING)
-		do_filename_expansion(out_list);
+static int
+glue_strings_and_expand_filenames(struct list_head *string_list)
+{
+	struct string *s, *tmp;
+	LIST_HEAD(new_list);
+	while (!list_empty(string_list)) {
+		struct list_head *first = string_list->next;
+		LIST_HEAD(glue_list);
+		list_move_tail(first, &glue_list);
+		list_for_each_entry_safe(s, tmp, string_list, list) {
+			if (s->flags & STRING_FLAG_PRECEDING_WHITESPACE)
+				break;
+			else
+				list_move_tail(&s->list, &glue_list);
+		}
+		s = join_strings(&glue_list);
+		list_add_tail(&s->list, &new_list);
+	}
+	list_splice_tail(&new_list, string_list);
+	return do_filename_expansion(string_list);
 }
 
 static int
@@ -223,26 +301,30 @@ parse_tok_list(struct token *tok,
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
 	unsigned nleading_var_assignments = 0;
-	bool leading = true;
+	/*bool leading = true;*/
 	while (tok->type & TOK_CLASS_STRING) {
-		if (leading
-		    && (tok->type & TOK_UNQUOTED_STRING)
-		    && strchr(tok->tok_data, '='))
-		{
-			++nleading_var_assignments;
-		} else {
-			leading = false;
+		/*if (leading*/
+		    /*&& (tok->type & TOK_UNQUOTED_STRING)*/
+		    /*&& strchr(tok->tok_data, '='))*/
+		/*{*/
+			/*++nleading_var_assignments;*/
+		/*} else {*/
+			/*leading = false;*/
 			LIST_HEAD(tmp_list);
-			expand_string(tok, &tmp_list);
+			ret = expand_params_and_word_split(tok, &tmp_list);
+			if (ret != 0)
+				goto out_free_string_lists;
 			list_splice_tail(&tmp_list, &string_list);
-		}
+		/*}*/
 		tok = tok->next;
 		if (!tok) {
 			ret = 0;
 			break;
 		}
 	}
-	ret = 0;
+	ret = glue_strings_and_expand_filenames(&string_list);
+	if (ret != 0)
+		goto out_free_string_lists;
 	INIT_LIST_HEAD(cmd_args);
 	INIT_LIST_HEAD(redirs);
 	list_splice_tail(&string_list, cmd_args);
