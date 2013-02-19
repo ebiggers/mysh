@@ -283,6 +283,13 @@ static int builtin_shift(unsigned argc, const char **argv)
 	return 0;
 }
 
+static int builtin_unset(unsigned argc, const char **argv)
+{
+	while (argc--)
+		insert_shell_param(*argv++, NULL);
+	return 0;
+}
+
 struct builtin {
 	/* Name of the command through which the builtin will be called */
 	const char *name;
@@ -312,6 +319,7 @@ static const struct builtin builtins[] = {
 	{"set",    builtin_set,    "set [[-+]fev] [--] [arg ...]"},
 	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
 	{"shift",  builtin_shift,  "shift [N]"},
+	{"unset",  builtin_unset,  "unset [name ...]"},
 };
 
 #define NUM_BUILTINS ARRAY_SIZE(builtins)
