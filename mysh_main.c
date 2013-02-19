@@ -884,6 +884,7 @@ int main(int argc, char **argv)
 		ssize_t bytes_read;
 		size_t bytes_remaining;
 
+		fprintf(stderr, "printed prompt\n");
 		/* Print command prompt */
 		if (interactive)
 			fprintf(stdout, "%s $ ", lookup_shell_param("PWD"));
