@@ -602,13 +602,16 @@ static int execute_pipeline(struct token **pipe_commands,
 	int prev_read_end;
 	pid_t child_pids[ncommands];
 
+	mysh_assert(ncommands != 0);
 	async = false;
-	for (i = 0; i < ncommands; i++) {
+	i = 0;
+	do {
 		INIT_LIST_HEAD(&cmd_arg_lists[i]);
 		INIT_LIST_HEAD(&redir_lists[i]);
 		INIT_LIST_HEAD(&var_assignment_lists[i]);
-	}
-	for (i = 0; i < ncommands; i++) {
+	} while (++i != ncommands);
+	i = 0;
+	do {
 		ret = parse_tok_list(pipe_commands[i],
 				     (i == ncommands - 1),
 				     &async,
@@ -619,10 +622,10 @@ static int execute_pipeline(struct token **pipe_commands,
 				     &num_redirs[i]);
 		if (ret)
 			goto out_free_lists;
-	}
+	} while (++i != ncommands);
 
 	if (mysh_noexecute)
-		return 0;
+		return ret;
 
 	/* If the pipeline only has one command and is not being executed
 	 * asynchronously, try interpreting the command as a builtin.  Note:
@@ -642,18 +645,19 @@ static int execute_pipeline(struct token **pipe_commands,
 		}
 	}
 
-	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
-		if (cmd_nargs[cmd_idx] == 0) {
+	i = 0;
+	do {
+		if (cmd_nargs[i] == 0) {
 			mysh_error("Expected command name");
 			ret = -1;
 			goto out_free_lists;
 		}
-	}
+	} while (++i != ncommands);
 
 	/* Execute the commands */
 	prev_read_end = pipe_fds[0] = pipe_fds[1] = -1;
-	for (cmd_idx = 0; cmd_idx < ncommands; cmd_idx++) {
-
+	cmd_idx = 0;
+	do {
 		/* Close any pipes we created that are no longer needed; also
 		 * save the read end of the previous pipe (if any) in the
 		 * prev_read_end variable.  */
@@ -691,7 +695,7 @@ static int execute_pipeline(struct token **pipe_commands,
 			/* Parent: save child pid in an array */
 			child_pids[cmd_idx] = ret;
 		}
-	}
+	} while (++cmd_idx != ncommands);
 	ret = 0;
 out_close_pipes:
 	if (pipe_fds[0] >= 0)
