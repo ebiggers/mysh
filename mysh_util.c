@@ -35,9 +35,9 @@ void mysh_error_with_errno(const char *fmt, ...)
 	va_end(va);
 }
 
-void *xmalloc(size_t len)
+void *xmalloc(size_t size)
 {
-	void *p = malloc(len);
+	void *p = malloc(size);
 	if (!p) {
 		mysh_error("out of memory");
 		exit(-1);
@@ -45,9 +45,19 @@ void *xmalloc(size_t len)
 	return p;
 }
 
-void *xzalloc(size_t len)
+void *xrealloc(void *ptr, size_t size)
 {
-	return memset(xmalloc(len), 0, len);
+	void *p = realloc(ptr, size);
+	if (!p) {
+		mysh_error("out of memory");
+		exit(-1);
+	}
+	return p;
+}
+
+void *xzalloc(size_t size)
+{
+	return memset(xmalloc(size), 0, size);
 }
 
 char *xstrdup(const char *s)

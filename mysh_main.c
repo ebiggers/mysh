@@ -49,15 +49,16 @@
 
 #include "mysh.h"
 #include "list.h"
+#include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <glob.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
-#include <ctype.h>
-#include <glob.h>
 #include <unistd.h>
 
 
@@ -183,7 +184,7 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 	chars = s->chars;
 	i = 0;
 	*leading_whitespace = false;
-	while (1) {
+	for (;;) {
 		/* skip leading whitespace produced by parameter expansion  */
 		size_t j = i;
 		while (isspace(chars[i]) && param_char_map[i] != 0) {
@@ -316,7 +317,9 @@ do_filename_expansion(struct list_head *string_list)
 
 /* Do parameter expansion and word splitting */
 static int
-expand_params_and_word_split(struct token *tok, struct list_head *out_list)
+expand_params_and_word_split(struct token *tok,
+			     bool have_next_token,
+			     struct list_head *out_list)
 {
 	struct string *s;
 	bool leading_whitespace;
@@ -359,8 +362,8 @@ expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 		/* If there was trailing whitespace as a result of word
 		 * splitting, force @preceded_by_whitespace to true on the next
 		 * token (if there is one) */
-		if (tok->next != NULL && trailing_whitespace)
-			tok->next->preceded_by_whitespace = true;
+		if (have_next_token && trailing_whitespace)
+			list_entry(tok->list.next, struct token, list)->preceded_by_whitespace = true;
 	} else {
 		list_add_tail(&s->list, out_list);
 		leading_whitespace = false;
@@ -457,7 +460,7 @@ static void transfer_var_assignments(struct list_head *string_list,
 }
 
 static int
-parse_tok_list(struct token *tok,
+parse_tok_list(struct list_head *toks,
 	       const bool is_last,
 	       bool *async_ret,
 	       struct list_head *cmd_args,
@@ -466,22 +469,24 @@ parse_tok_list(struct token *tok,
 	       unsigned *cmd_nargs_ret,
 	       unsigned *num_redirs_ret)
 {
+	struct token *tok;
 	int ret;
+
 	mysh_assert(list_empty(var_assignments));
 	mysh_assert(list_empty(cmd_args));
 	mysh_assert(list_empty(redirs));
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
-	while (tok->type & TOK_CLASS_STRING) {
+	list_for_each_entry(tok, toks, list) {
+		if (!(tok->type & TOK_CLASS_STRING))
+			break;
 		LIST_HEAD(tmp_list);
-		ret = expand_params_and_word_split(tok, &tmp_list);
+		ret = expand_params_and_word_split(tok, (tok->list.next != toks), &tmp_list);
 		if (ret)
 			goto out_free_string_lists;
 		list_splice_tail(&tmp_list, &string_list);
-		tok = tok->next;
-		if (!tok)
-			break;
 	}
+
 	ret = glue_strings(&string_list);
 	if (ret)
 		goto out_free_string_lists;
@@ -498,7 +503,7 @@ parse_tok_list(struct token *tok,
 	goto out;
 #if 0
 	bool is_first_redirection = true;
-	while (1) {
+	for (;;) {
 		struct token *next = tok->next;
 		const char *redir_source;
 		const char *redir_dest;
@@ -584,7 +589,7 @@ static int process_var_assignments(const struct list_head *assignments)
 	return 0;
 }
 
-static int execute_pipeline(struct token **pipe_commands,
+static int execute_pipeline(struct list_head command_tokens[],
 			    unsigned ncommands)
 {
 	unsigned i;
@@ -612,7 +617,7 @@ static int execute_pipeline(struct token **pipe_commands,
 	} while (++i != ncommands);
 	i = 0;
 	do {
-		ret = parse_tok_list(pipe_commands[i],
+		ret = parse_tok_list(&command_tokens[i],
 				     (i == ncommands - 1),
 				     &async,
 				     &cmd_arg_lists[i],
@@ -735,86 +740,52 @@ out_free_lists:
 
 /* Execute a line of input that has been parsed into tokens.
  * Also is responsible for freeing the tokens. */
-static int execute_tok_list(struct token *tok_list)
+static int execute_tok_list(struct list_head *tok_list)
 {
-	struct token *tok, *prev, *next;
+	struct token *tok, *tmp;
 	unsigned ncommands;
 	unsigned cmd_idx;
 	unsigned i;
-	bool cmd_boundary;
 	int ret;
-
-	tok = tok_list;
-	if (tok->type == TOK_EOL) { /* empty line */
-		free(tok);
-		return 0;
-	}
+	struct list_head *cur_list;
 
 	/* split the tokens into individual lists (commands), around the '|'
 	 * signs. */
 	ncommands = 0;
-	do {
+	list_for_each_entry(tok, tok_list, list)
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY)
 			ncommands++;
-		tok = tok->next;
-	} while (tok);
 
-	struct token *commands[ncommands];
+	struct list_head command_tokens[ncommands];
+
+	if (list_is_singular(tok_list)) {
+		ret = 0;
+		goto out;
+	}
+
+	for (i = 0; i < ncommands; i++)
+		INIT_LIST_HEAD(&command_tokens[i]);
 
 	cmd_idx = 0;
-	cmd_boundary = true;
-	tok = tok_list;
-	do {
-		next = tok->next;
+	cur_list = &command_tokens[0];
+	list_for_each_entry_safe(tok, tmp, tok_list, list) {
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
-			free(tok);
-			if (cmd_boundary) {
+			if (list_empty(cur_list)) {
 				mysh_error("empty command in pipeline");
-				free_tok_list(next);
 				ret = -1;
 				goto out;
-			} else {
-				prev->next = NULL;
-				cmd_boundary = true;
 			}
-		} else if (cmd_boundary) {
-			/* begin token list for next command */
-			commands[cmd_idx++] = tok;
-			cmd_boundary = false;
+			cur_list++;
+		} else {
+			list_move(&tok->list, cur_list);
 		}
-		prev = tok;
-		tok = next;
-	} while (tok);
-	ret = execute_pipeline(commands, cmd_idx);
+	}
+	ret = execute_pipeline(command_tokens, cmd_idx);
 out:
+	free_tok_list(tok_list);
 	for (i = 0; i < cmd_idx; i++)
-		free_tok_list(commands[i]);
+		free_tok_list(&command_tokens[i]);
 	return ret;
-}
-
-/* Execute a line of input to the shell.  On parse error, returns -1.  On read
- * errors with filename globbing, returns -1.  On memory allocation failure,
- * immediately exits the shell with status 1.  Otherwise, the return value is
- * the exit status of the last command in the pipeline executed, or 0 if there
- * were no commands in the pipeline (for example, just a comment). */
-static int execute_line(const char *line)
-{
-	/* Parse the line into tokens, then pass control off to
-	 * execute_tok_list(). */
-	struct token *tok, *tok_list = NULL, *tok_list_tail = NULL;
-	do {
-		tok = lex_next_token(&line);
-		if (!tok) { /* parse error */
-			free_tok_list(tok_list);
-			return -1;
-		}
-		if (tok_list_tail)
-			tok_list_tail->next = tok;
-		else
-			tok_list = tok;
-		tok_list_tail = tok;
-	} while (tok->type != TOK_EOL);
-	return execute_tok_list(tok_list);
 }
 
 static void set_up_signal_handlers()
@@ -826,14 +797,36 @@ static void set_up_signal_handlers()
 		mysh_error_with_errno("Failed to set up signal handlers");
 }
 
+#define DEFAULT_INPUT_BUFSIZE 32768
+
+static int execute_shell_input(struct list_head *cur_tok_list,
+			       const char *input,
+			       size_t *bytes_remaining_p)
+{
+	int ret;
+	struct token *tok;
+	do {
+		ret = lex_next_token(input, bytes_remaining_p, &tok);
+		if (ret)
+			return ret;
+		list_add_tail(&tok->list, cur_tok_list);
+	} while (tok->type != TOK_END_OF_SHELL_STATEMENT);
+	return execute_tok_list(cur_tok_list);
+}
+
 int main(int argc, char **argv)
 {
 	int c;
-	FILE *in;
-	char *line;
-	size_t n;
+	int in_fd;
+	int ret;
 	bool from_stdin = false;
 	bool interactive = false;
+	char *input_buf;
+	size_t input_data_begin;
+	size_t input_data_end;
+	size_t input_buf_len;
+
+	LIST_HEAD(cur_tok_list);
 
 	set_up_signal_handlers();
 	init_param_map();
@@ -842,8 +835,13 @@ int main(int argc, char **argv)
 		switch (c) {
 		case 'c':
 			/* execute string provided on the command line */
-			set_positional_params(argc - optind, argv[0], &argv[optind]);
-			mysh_last_exit_status = execute_line(optarg);
+			set_positional_params(argc - optind, argv[optind - 1], &argv[optind]);
+			input_buf = optarg;
+			input_buf_len = strlen(optarg) + 1;
+			input_buf[input_buf_len - 1] = '\n';
+			mysh_last_exit_status = execute_shell_input(&cur_tok_list,
+								    input_buf,
+								    &input_buf_len);
 			goto out;
 		case 's':
 			/* read from stdin */
@@ -864,39 +862,98 @@ int main(int argc, char **argv)
 	(void)set_pwd();
 
 	if (argc && !from_stdin) {
-		in = fopen(argv[0], "rb");
-		if (!in) {
+		in_fd = open(argv[0], O_RDONLY);
+		if (in_fd < 0) {
 			mysh_error_with_errno("can't open %s", argv[0]);
 			mysh_last_exit_status = -1;
 			goto out;
 		}
-		set_positional_params(argc - 1, argv[-1], argv + 1);
+		set_positional_params(argc - 1, argv[0], argv + 1);
 	} else {
 		set_positional_params(argc, argv[-1], argv);
-		in = stdin;
+		in_fd = STDIN_FILENO;
 	}
-	if (isatty(fileno(in)))
+	if (isatty(in_fd))
 		interactive = true;
-
 	mysh_last_exit_status = 0;
-	line = NULL;
-	while (1) {
+	input_buf_len = DEFAULT_INPUT_BUFSIZE;
+	input_buf = xmalloc(input_buf_len);
+	input_data_begin = 0;
+	input_data_end = 0;
+	for (;;) {
+		ssize_t bytes_read;
+		size_t bytes_remaining;
+
+		/* Print command prompt */
 		if (interactive)
 			fprintf(stdout, "%s $ ", lookup_shell_param("PWD"));
-		if (getline(&line, &n, in) == -1)
+
+	read_again_check_buffer:
+		/* Check whether less than half the distance to the end of the
+		 * buffer is remaining */
+		if (input_buf_len - input_data_end < input_buf_len / 2) {
+			if (input_data_begin > input_buf_len / 10) {
+				/* Move data to beginning of buffer to make more
+				 * room */
+				bytes_remaining = input_data_end - input_data_begin;
+				memmove(input_buf, &input_buf[input_data_begin],
+					bytes_remaining);
+				input_data_begin = 0;
+				input_data_end = bytes_remaining;
+			} else if (input_data_end == input_buf_len) {
+				/* Buffer is full or almost full */
+				input_buf = xrealloc(input_buf, input_buf_len * 2);
+			}
+		}
+
+	read_again:
+		/* Read data into the buffer */
+		bytes_read = read(in_fd, &input_buf[input_data_end],
+				  input_buf_len - input_data_end);
+		if (bytes_read == 0) {
+			/* EOF */
+			if (input_data_end - input_data_begin != 0) {
+				mysh_error("Unexpected end of input");
+				mysh_last_exit_status = -1;
+			}
 			break;
-		if (mysh_write_input_to_stderr)
-			fputs(line, stderr);
-		mysh_last_exit_status = execute_line(line);
-		if (mysh_last_exit_status != 0 && mysh_exit_on_error)
+		} else if (bytes_read < 0) {
+			/* Read error */
+			if (errno == EINTR)
+				goto read_again;
+			mysh_error_with_errno("error reading input");
+			mysh_last_exit_status = -1;
 			break;
+		} else {
+			/* Successful read */
+			input_data_end += bytes_read;
+			mysh_assert(input_data_end <= input_buf_len);
+			bytes_remaining = input_data_end - input_data_begin;
+
+			/* Execute as many commands as possible */
+			for (;;) {
+				ret = execute_shell_input(&cur_tok_list,
+							  input_buf,
+							  &bytes_remaining);
+				if (ret == LEX_ERROR) {
+					mysh_last_exit_status = -1;
+					goto out_break_read_loop;
+				} else if (ret == LEX_NOT_ENOUGH_INPUT) {
+					goto read_again_check_buffer;
+				} else {
+					mysh_last_exit_status = ret;
+					mysh_assert(input_data_begin +
+						    bytes_remaining <= input_data_end);
+					input_data_begin = input_data_end - bytes_remaining;
+				}
+				if (mysh_last_exit_status != 0 && mysh_exit_on_error)
+					goto out_break_read_loop;
+			}
+		}
 	}
-	if (ferror(in)) {
-		mysh_error_with_errno("error reading input");
-		mysh_last_exit_status = -1;
-	}
-	fclose(in);
-	free(line);
+out_break_read_loop:
+	close(in_fd);
+	free(input_buf);
 out:
 	destroy_positional_params();
 	destroy_param_map();

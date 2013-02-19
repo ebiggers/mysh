@@ -12,16 +12,21 @@
 #define mysh_assert assert
 
 enum token_type {
-	TOK_UNQUOTED_STRING      = 0x1,
-	TOK_SINGLE_QUOTED_STRING = 0x2,
-	TOK_DOUBLE_QUOTED_STRING = 0x4,
-	TOK_PIPE                 = 0x8,
-	TOK_GREATER_THAN         = 0x10,
-	TOK_LESS_THAN            = 0x20,
-	TOK_AMPERSAND            = 0x40,
-	TOK_EOL                  = 0x80,
+	TOK_UNQUOTED_STRING        = 0x1,
+	TOK_SINGLE_QUOTED_STRING   = 0x2,
+	TOK_DOUBLE_QUOTED_STRING   = 0x4,
+	TOK_PIPE                   = 0x8,
+	TOK_GREATER_THAN           = 0x10,
+	TOK_LESS_THAN              = 0x20,
+	TOK_AMPERSAND              = 0x40,
+	TOK_END_OF_SHELL_STATEMENT = 0x80,
 };
 
+enum {
+	LEX_SUCCESS          = 0,
+	LEX_ERROR            = -1000, /* don't conflict with exit statuses */
+	LEX_NOT_ENOUGH_INPUT = -2000, /* don't conflict with exit statuses */
+};
 
 #define TOK_CLASS_STRING \
 		(TOK_UNQUOTED_STRING | TOK_SINGLE_QUOTED_STRING | TOK_DOUBLE_QUOTED_STRING)
@@ -30,14 +35,15 @@ enum token_type {
 		(TOK_GREATER_THAN | TOK_LESS_THAN)
 
 #define TOK_CLASS_CMD_BOUNDARY \
-		(TOK_PIPE | TOK_EOL)
+		(TOK_PIPE | TOK_END_OF_SHELL_STATEMENT)
 
 struct token {
 	bool preceded_by_whitespace;
 	enum token_type type;
 	char *tok_data;
-	struct token *next;
+	struct list_head list;
 };
+
 
 enum redirection_type {
 	REDIR_TYPE_FD_TO_FD,
@@ -66,15 +72,17 @@ struct string {
 	struct list_head list;
 };
 
-#define STRING_FLAG_UNQUOTED			0x1
-#define STRING_FLAG_DOUBLE_QUOTED		0x2
-#define STRING_FLAG_SINGLE_QUOTED		0x4
-#define STRING_FLAG_PARAM_EXPANDED		0x8
-#define STRING_FLAG_PRECEDING_WHITESPACE	0x10
-#define STRING_FLAG_WORD_SPLIT			0x20
-#define STRING_FLAG_FILENAME_EXPANDED		0x40
-#define STRING_FLAG_WAS_PARAM			0x80
-#define STRING_FLAG_VAR_ASSIGNMENT              0x100
+enum {
+	STRING_FLAG_UNQUOTED             = 0x1,
+	STRING_FLAG_DOUBLE_QUOTED        = 0x2,
+	STRING_FLAG_SINGLE_QUOTED        = 0x4,
+	STRING_FLAG_PARAM_EXPANDED       = 0x8,
+	STRING_FLAG_PRECEDING_WHITESPACE = 0x10,
+	STRING_FLAG_WORD_SPLIT           = 0x20,
+	STRING_FLAG_FILENAME_EXPANDED    = 0x40,
+	STRING_FLAG_WAS_PARAM            = 0x80,
+	STRING_FLAG_VAR_ASSIGNMENT       = 0x100,
+};
 
 /* mysh_builtin.c */
 extern int set_pwd();
@@ -114,8 +122,9 @@ extern char **positional_parameters;
 extern unsigned int num_positional_parameters;
 
 /* mysh_parse.c */
-extern void free_tok_list(struct token *tok);
-extern struct token *lex_next_token(const char **pp);
+extern void free_tok_list(struct list_head *tok_list);
+extern int lex_next_token(const char *p, size_t *bytes_remaining_p,
+			  struct token **tok_ret);
 
 /* mysh_redir.c */
 struct orig_fds {
@@ -129,8 +138,9 @@ extern int do_redirections(const struct list_head *redirs, struct orig_fds *orig
 /* mysh_util.c */
 extern void mysh_error(const char *fmt, ...);
 extern void mysh_error_with_errno(const char *fmt, ...);
-extern void *xmalloc(size_t len);
-extern void *xzalloc(size_t len);
+extern void *xmalloc(size_t size);
+extern void *xzalloc(size_t size);
+extern void *xrealloc(void *ptr, size_t size);
 extern char *xstrdup(const char *s);
 extern struct string * join_strings(struct list_head *strings);
 extern struct string *new_string(size_t len);

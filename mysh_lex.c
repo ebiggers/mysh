@@ -12,50 +12,49 @@
 #include <ctype.h>
 
 /* Single quotes preserve the literal value of every character in the string. */
-static ssize_t scan_single_quoted_string(const char **pp, char *out_buf)
+static ssize_t scan_single_quoted_string(const char *p,
+					 size_t *bytes_remaining_p, char *out_buf)
 {
+	const char *term_quote;
 	ssize_t len;
-	char *term_quote = strchr(*pp, '\'');
+
+ 	term_quote = memchr(p, '\'', *bytes_remaining_p);
 	if (term_quote) {
-		len = term_quote - *pp;
-		if (out_buf)
-			memcpy(out_buf, *pp, len);
-		*pp = term_quote + 1;
+		len = term_quote - p;
+		if (memchr(p, '\0', len)) {
+			mysh_error("illegal null byte in single-quoted string");
+			len = LEX_ERROR;
+		} else {
+			if (out_buf)
+				memcpy(out_buf, p, len);
+			*bytes_remaining_p -= (len + 1);
+		}
 	} else {
-		/* string ended before we found the terminating quote */
-		mysh_error("no terminating quote");
-		len = -1;
+		len = LEX_NOT_ENOUGH_INPUT;
 	}
 	return len;
 }
 
-static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
+static ssize_t scan_double_quoted_string(const char *p,
+					 size_t *bytes_remaining_p, char *out_buf)
 {
-	const char *p = *pp;
 	bool escape = false;
 	ssize_t len = 0;
-	while (1) {
+	size_t bytes_remaining = *bytes_remaining_p;
+
+	for (;;) {
+		if (!bytes_remaining)
+			return LEX_NOT_ENOUGH_INPUT;
 		char c = *p++;
 		if (c == '\0') {
-			/* string ended before we found the terminating quote */
-			mysh_error("no terminating quote");
-			return -1;
+			mysh_error("illegal null byte in double-quoted string");
+			return LEX_ERROR;
 		} else if (c == '\\' && !escape) {
 			/* backslash: try to escape the next character */
 			escape = true;
 		} else if (c == '"' && !escape) {
 			/* found terminating double-quote */
 			break;
-	#if 0
-		} else if (c == '$' && !escape) {
-			mysh_error("found '$' in double-quoted string, "
-				   "but variable expansion is not supported");
-			return -1;
-		} else if (c == '`' && !escape) {
-			mysh_error("found '`' in double-quoted string, "
-				   "but command expansion is not supported");
-			return -1;
-	#endif
 		} else {
 			if (
 			    escape &&
@@ -76,8 +75,9 @@ static ssize_t scan_double_quoted_string(const char **pp, char *out_buf)
 			/* clear the escape flag */
 			escape = false;
 		}
+		bytes_remaining--;
 	}
-	*pp = p;
+	*bytes_remaining_p = bytes_remaining;
 	return len;
 }
 
@@ -97,70 +97,81 @@ static const unsigned char is_special[256] = {
 	['\r'] = 1,
 };
 
-static ssize_t scan_unquoted_string(const char **pp, char *out_buf)
+static ssize_t scan_unquoted_string(const char *p,
+				    size_t *bytes_remaining_p, char *out_buf)
 {
-	const char *p;
+	const char *orig_p = p;
 	ssize_t len = 0;
 	bool escape = false;
-	for (p = *pp; ; p++) {
+	size_t bytes_remaining = *bytes_remaining_p;
+	for (;;) {
+		if (!bytes_remaining)
+			return LEX_NOT_ENOUGH_INPUT;
 		if (is_special[(unsigned char)*p]) {
-			if (*p == '\0')
-				break;
+			if (*p == '\0') {
+				mysh_error("illegal null byte in unquoted string");
+				return LEX_ERROR;
+			}
 			if (!escape) {
 				if (*p == '\\') {
 					escape = true;
 					continue;
-				} else if (!(*p == '#' && p != *pp && *(p - 1) == '$'))
+					/* special case to not start a comment
+					 * at the # of $# */
+				} else if (!(*p == '#' && p != orig_p && *(p - 1) == '$'))
 					break;
 			}
 		}
 		if (out_buf)
 			*out_buf++ = *p;
 		len++;
+		p++;
+		bytes_remaining--;
 		escape = false;
 	}
-	*pp = p;
+	*bytes_remaining_p = bytes_remaining;
 	return len;
 }
 
-typedef ssize_t (*scan_string_t)(const char **pp, char *out_buf);
+typedef ssize_t (*scan_string_t)(const char *, size_t *, char *);
 
 /* Parse a string (single-quoted, double-quoted, or unquoted, depending on the
- * @scan_string function).  Update *pp to point to the next character after the
- * end of the string.  Return value is the literal string in newly allocated
- * memory, or NULL on parse error.  */
-static char *lex_string(const char **pp, scan_string_t scan_string)
+ * @scan_string function).  */
+static int lex_string(const char *p, scan_string_t scan_string,
+		      size_t *bytes_remaining_p, char **string_ret)
 {
 	ssize_t len;
 	char *buf;
-	const char *p;
+	size_t bytes_remaining = *bytes_remaining_p;
 	
 	/* get string length */
-	p = *pp;
-	len = scan_string(&p, NULL);
+	len = scan_string(p, &bytes_remaining, NULL);
 	if (len < 0)
-		return NULL; /* parse error */
+		return len; /* parse error or not enough input */
 	buf = xmalloc(len + 1);
 	/* get the string */
-	scan_string(pp, buf);
+	scan_string(p, bytes_remaining_p, buf);
 	buf[len] = '\0';
-	return buf;
+	*string_ret = buf;
+	return 0;
 }
 
-/* Return the next token from the line pointed to by *pp, and update *pp to
- * point to the next unparsed part of the line.  Returns NULL on parse error. */
-struct token *lex_next_token(const char **pp)
+int lex_next_token(const char *p, size_t *bytes_remaining_p,
+		   struct token **tok_ret)
 {
-	const char *p = *pp;
 	struct token *tok;
 	enum token_type type;
 	char *tok_data;
 	bool found_whitespace = false;
+	size_t bytes_remaining = *bytes_remaining_p;
+	int ret;
 
 	/* ignore whitespace between tokens */
-	while (isspace(*p)) {
+	while (*p != '\n' && (isspace(*p) || *p == '\0')) {
 		found_whitespace = true;
 		p++;
+		if (--bytes_remaining == 0)
+			return LEX_NOT_ENOUGH_INPUT;
 	}
 
 	/* Choose the token type based on the next character, then parse the
@@ -169,65 +180,80 @@ struct token *lex_next_token(const char **pp)
 	switch (*p) {
 	case '&':
 		type = TOK_AMPERSAND;
-		p++;
+		--bytes_remaining;
 		break;
 	case '\'':
 		type = TOK_SINGLE_QUOTED_STRING;
-		p++;
-		if (!(tok_data = lex_string(&p, scan_single_quoted_string)))
-			return NULL; /* parse error */
+		--bytes_remaining;
+		ret = lex_string(p + 1, scan_single_quoted_string, &bytes_remaining, &tok_data);
+		if (ret < 0)
+			return ret;
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
-		p++;
-		if (!(tok_data = lex_string(&p, scan_double_quoted_string)))
-			return NULL; /* parse error */
+		--bytes_remaining;
+		ret = lex_string(p + 1, scan_double_quoted_string, &bytes_remaining, &tok_data);
+		if (ret < 0)
+			return ret;
 		break;
 	case '|':
 		type = TOK_PIPE;
-		p++;
+		--bytes_remaining;
 		break;
 	case '<':
 		type = TOK_GREATER_THAN;
-		p++;
+		--bytes_remaining;
 		break;
 	case '>':
 		type = TOK_LESS_THAN;
-		p++;
+		--bytes_remaining;
 		break;
-	case '\0': /* real end-of-line */
 	case '#': /* everything after '#' character is a comment */
-		type = TOK_EOL;
+		{
+			--bytes_remaining;
+			const char *newline = memchr(p + 1, '\n', bytes_remaining);
+			if (!newline)
+				return LEX_NOT_ENOUGH_INPUT;
+			bytes_remaining -= newline - p;
+		}
+		type = TOK_END_OF_SHELL_STATEMENT;
+		break;
+	case '\n':
+	case ';':
+		type = TOK_END_OF_SHELL_STATEMENT;
+		--bytes_remaining;
 		break;
 	default:
 		/* anything that didn't match one of the special characters is
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
-		if (!(tok_data = lex_string(&p, scan_unquoted_string)))
-			return NULL; /* parse error */
+		ret = lex_string(p + 1, scan_unquoted_string, &bytes_remaining, &tok_data);
+		if (ret < 0)
+			return ret;
 		break;
 	}
-	/* allocate and initialize the token */
+	/* Allocate and initialize the token */
 	tok = xmalloc(sizeof(struct token));
 	tok->preceded_by_whitespace = found_whitespace;
 	tok->type = type;
 	/* tok_data defaults to NULL if not explicitly set for a string token */
 	tok->tok_data = tok_data;
-	tok->next = NULL;
+	INIT_LIST_HEAD(&tok->list);
 
-	/* return the token and the pointer to the next unparsed character */
-	*pp = p;
-	return tok;
+	/* Return the token and set the bytes remaining in the input according
+	 * to how much was consumed */
+	*bytes_remaining_p = bytes_remaining;
+	*tok_ret = tok;
+	return 0;
 }
 
-void free_tok_list(struct token *tok)
+void free_tok_list(struct list_head *tok_list)
 {
-	struct token *next;
-	while (tok) {
-		next = tok->next;
+	struct token *tok, *tmp;
+	list_for_each_entry_safe(tok, tmp, tok_list, list) {
+		list_del(&tok->list);
 		free(tok->tok_data);
 		free(tok);
-		tok = next;
 	}
 }
 
