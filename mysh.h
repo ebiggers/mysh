@@ -91,6 +91,11 @@ extern bool maybe_execute_builtin(const struct list_head *command_toks,
 				  unsigned cmd_nargs,
 				  int *status_ret);
 
+/* mysh_lex.c */
+extern void free_tok_list(struct list_head *tok_list);
+extern int lex_next_token(const char *p, size_t *bytes_remaining_p,
+			  struct token **tok_ret);
+
 /* mysh_main.c */
 extern int mysh_last_exit_status;
 extern int mysh_filename_expansion_disabled;
@@ -147,11 +152,15 @@ shell_char_type(char c)
 	return (int)_shell_char_tab[(unsigned char)c];
 }
 
-
 /* mysh_parse.c */
-extern void free_tok_list(struct list_head *tok_list);
-extern int lex_next_token(const char *p, size_t *bytes_remaining_p,
-			  struct token **tok_ret);
+extern int parse_tok_list(struct list_head *toks,
+			  const bool is_last,
+			  bool *async_ret,
+			  struct list_head *cmd_args,
+			  struct list_head *var_assignments,
+			  struct list_head *redirs,
+			  unsigned *cmd_nargs_ret,
+			  unsigned *num_redirs_ret);
 
 /* mysh_redir.c */
 struct orig_fds {
