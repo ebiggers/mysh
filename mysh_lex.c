@@ -11,6 +11,16 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+void free_tok_list(struct list_head *tok_list)
+{
+	struct token *tok, *tmp;
+	list_for_each_entry_safe(tok, tmp, tok_list, list) {
+		list_del(&tok->list);
+		free(tok->tok_data);
+		free(tok);
+	}
+}
+
 /* Single quotes preserve the literal value of every character in the string. */
 static ssize_t scan_single_quoted_string(const char *p,
 					 size_t *bytes_remaining_p, char *out_buf)
@@ -149,6 +159,23 @@ static int lex_string(const char *p, scan_string_t scan_string,
 	return 0;
 }
 
+/*
+ * Get the next token from the shell input.  See 'enum token_type' for the
+ * possible token types.
+ *
+ * @p:                  Pointer to the input to lex.
+ *
+ * @bytes_remaining_p:  Pointer to the number of bytes of input that
+ *                      are remaining.  On success, this value is updated
+ *                      to subtract the bytes that were consumed by the new
+ *                      token.
+ *
+ * @tok_ret:            On success, a pointer to the new token is written into
+ *                      this location.
+ *
+ * Returns: 0 on success; or LEX_NOT_ENOUGH_INPUT if a full token cannot be parsed
+ * with the remaining input; or LEX_ERROR if the input is invaled.
+ */
 int lex_next_token(const char *p, size_t *bytes_remaining_p,
 		   struct token **tok_ret)
 {
@@ -232,22 +259,9 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 	tok->type = type;
 	/* tok_data defaults to NULL if not explicitly set for a string token */
 	tok->tok_data = tok_data;
-	INIT_LIST_HEAD(&tok->list);
-
 	/* Return the token and set the bytes remaining in the input according
 	 * to how much was consumed */
 	*bytes_remaining_p = bytes_remaining;
 	*tok_ret = tok;
 	return 0;
 }
-
-void free_tok_list(struct list_head *tok_list)
-{
-	struct token *tok, *tmp;
-	list_for_each_entry_safe(tok, tmp, tok_list, list) {
-		list_del(&tok->list);
-		free(tok->tok_data);
-		free(tok);
-	}
-}
-

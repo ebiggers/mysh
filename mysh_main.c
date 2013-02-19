@@ -346,6 +346,31 @@ static void set_up_signal_handlers()
 
 #define DEFAULT_INPUT_BUFSIZE 4096
 
+/*
+ * Execute input to the shell.
+ *
+ * @cur_tok_list:  A list containing any previously parsed tokens for the
+ *		   current shell statement.
+ * 
+ * @input:         Pointer to the shell input, not necessarily null-terminated.
+ *
+ * @bytes_remaining_p:
+ *                 Number of bytes of input that are remaining.
+ *
+ * This function returns when any of the following is true:
+ *    - There is no input remaining and there are no residual tokens.  In this
+ *    case, the return value is the exit status of the last executed shell
+ *    statement.
+ *    - There is not enough input remaining to lex a full token, and the code is
+ *    in the middle of lexing a shell statement.  In this case, the return value
+ *    is LEX_NOT_ENOUGH_INPUT, and *bytes_remaining_p is set to the number of
+ *    bytes remaining in the input that have not yet been lexed.
+ *    - A shell command was executed and it had nonzero exit status, and the
+ *    'set -e' option is active.  In this case, the return value is this exit
+ *    status.
+ *    - There were problems breaking the input into tokens.  In this case, the
+ *    return value is LEX_ERROR.
+ */
 static int execute_shell_input(struct list_head *cur_tok_list,
 			       const char *input,
 			       size_t *bytes_remaining_p)
@@ -374,11 +399,15 @@ static int execute_shell_input(struct list_head *cur_tok_list,
 	return ret;
 }
 
+/* A wrapper around execute_shell_input() that requires the input to be 0 or
+ * more full shell statements. */
 int execute_full_shell_input(const char *input, size_t len)
 {
 	int ret;
 	LIST_HEAD(tok_list);
 
+	/* hack: overwrite null terminator with a newline so that the end of
+	 * input is seen as the end of a shell statement */
 	((char*)input)[len++] = '\n';
 	ret = execute_shell_input(&tok_list, input, &len);
 	switch (ret) {
