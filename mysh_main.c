@@ -138,6 +138,15 @@ static int process_var_assignments(const struct list_head *assignments)
 	return 0;
 }
 
+/* Executes a pipeline.  This includes the trivial pipeline consisting of only 1
+ * comment.
+ *
+ * @command_tokens:  An array that gives the lists of tokens for each command.
+ * @ncommands:  Number of commands in the pipeline.
+ *
+ * Return value is the exit status of the last pipeline component on success, or
+ * -1 if there was a problem with the execution of the pipeline itself.
+ */
 static int execute_pipeline(struct list_head command_tokens[],
 			    unsigned ncommands)
 {
@@ -179,7 +188,7 @@ static int execute_pipeline(struct list_head command_tokens[],
 	} while (++i != ncommands);
 
 	if (mysh_noexecute)
-		return ret;
+		goto out_free_lists;
 
 	/* If the pipeline only has one command and is not being executed
 	 * asynchronously, try interpreting the command as a builtin.  Note:
@@ -259,7 +268,8 @@ out_close_pipes:
 	if (prev_read_end >= 0)
 		close(prev_read_end);
 	if (ret == 0 && !async) {
-		for (i = 0; i < cmd_idx; i++) {
+		i = 0;
+		do {
 			int status;
 			if (waitpid(child_pids[i], &status, 0) == -1) {
 				if (ret == 0)
@@ -276,14 +286,16 @@ out_close_pipes:
 				if (ret == 0)
 					ret = -1;
 			}
-		}
+		} while (++i != ncommands);
 	}
 out_free_lists:
-	for (i = 0; i < ncommands; i++) {
+	i = 0;
+	do {
 		free_string_list(&cmd_arg_lists[i]);
 		free_string_list(&var_assignment_lists[i]);
-		free_string_list(&redir_lists[i]);
-	}
+		/* XXX */
+		/*free_string_list(&redir_lists[i]);*/
+	} while (++i != ncommands);
 	return ret;
 }
 
@@ -297,8 +309,7 @@ static int execute_tok_list(struct list_head *tok_list)
 	int ret;
 	struct list_head *cur_list;
 
-	/* split the tokens into individual lists (commands), around the '|'
-	 * signs. */
+	/* Count the number of commands in the pipeline */
 	ncommands = 0;
 	list_for_each_entry(tok, tok_list, list)
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY)
@@ -309,11 +320,15 @@ static int execute_tok_list(struct list_head *tok_list)
 	for (i = 0; i < ncommands; i++)
 		INIT_LIST_HEAD(&command_tokens[i]);
 
+	/* Return 0 if the pipeline is empty (e.g. a line of only whitespace, or
+	 * only a comment) */
 	if (list_is_singular(tok_list)) {
 		ret = 0;
 		goto out;
 	}
 
+	/* Split the tokens into individual lists (commands), around the '|'
+	 * signs. */
 	cur_list = &command_tokens[0];
 	list_for_each_entry_safe(tok, tmp, tok_list, list) {
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
@@ -327,6 +342,7 @@ static int execute_tok_list(struct list_head *tok_list)
 			list_move_tail(&tok->list, cur_list);
 		}
 	}
+	/* Execute the pipeline */
 	ret = execute_pipeline(command_tokens, ncommands);
 out:
 	free_tok_list(tok_list);

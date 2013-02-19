@@ -199,6 +199,7 @@ static int expand_params_and_word_split(struct token *tok,
 	s->chars = tok->tok_data;
 	s->len = strlen(tok->tok_data);
 	s->flags = 0;
+	tok->tok_data = NULL;
 	switch (tok->type) {
 	case TOK_UNQUOTED_STRING:
 		s->flags |= STRING_FLAG_UNQUOTED;
@@ -212,7 +213,6 @@ static int expand_params_and_word_split(struct token *tok,
 	default:
 		break;
 	}
-	tok->tok_data = NULL;
 
 	/* Do parameter expansion on unquoted strings and on double-quoted
 	 * strings */
@@ -235,7 +235,7 @@ static int expand_params_and_word_split(struct token *tok,
 		list_add_tail(&s->list, out_list);
 		leading_whitespace = false;
 	}
-
+	free(param_char_map);
 	/* If at least one string was produced as a result of word splitting and
 	 * either the original token was preceded by whitespace or there was
 	 * additional preceding whitespace produced by parameter expansion, set
@@ -325,6 +325,42 @@ static void transfer_var_assignments(struct list_head *string_list,
 	}
 }
 
+/*    [N]>WORD
+ *    [N]>>WORD
+ *    [N]>&WORD
+ *
+ *    << WORD
+ *    <<< WORD
+ *    [N]<WORD
+ *
+ *    &>WORD
+ *    [N]&>>WORD
+ *
+ *    &
+ */
+static int parse_redirections(struct list_head *toks,
+			      struct list_head *cmd_args,
+			      struct list_head *redirs)
+{
+#if 0
+	for (; tok != toks; ) {
+		switch (tok->type) {
+		case TOK_GREATER_THAN:
+			break;
+		case TOK_LESS_THAN:
+			break;
+		case TOK_AMPERSAND:
+			break;
+		default:
+			mysh_error("Syntax error");
+			ret = -1;
+			goto out_free_string_lists;
+		}
+	}
+#endif
+	return 0;
+}
+
 /* Given a list of tokens that make up a component of a pipeline, parse the
  * tokens into the command arguments, the variable assignments (if any), and the
  * redirections (if any).  In the process, do parameter expansion, word
@@ -338,114 +374,45 @@ int parse_tok_list(struct list_head *toks,
 		   unsigned *cmd_nargs_ret,
 		   unsigned *num_redirs_ret)
 {
-	struct token *tok;
+	struct token *tok, *tmp;
 	int ret;
 
 	mysh_assert(list_empty(var_assignments));
 	mysh_assert(list_empty(cmd_args));
 	mysh_assert(list_empty(redirs));
 	LIST_HEAD(string_list);
-	LIST_HEAD(redir_string_list);
-	list_for_each_entry(tok, toks, list) {
+	list_for_each_entry_safe(tok, tmp, toks, list) {
 		if (!(tok->type & TOK_CLASS_STRING))
 			break;
 		LIST_HEAD(tmp_list);
 		ret = expand_params_and_word_split(tok, (tok->list.next != toks), &tmp_list);
 		if (ret)
-			goto out_free_string_lists;
+			goto out_free_string_list;
 		list_splice_tail(&tmp_list, &string_list);
+		list_del(&tok->list);
+		free(tok->tok_data);
+		free(tok);
 	}
 
 	ret = glue_strings(&string_list);
 	if (ret)
-		goto out_free_string_lists;
+		goto out_free_string_list;
 	if (!mysh_filename_expansion_disabled) {
 		ret = do_filename_expansion(&string_list);
 		if (ret)
-			goto out_free_string_lists;
+			goto out_free_string_list;
 	}
 	transfer_var_assignments(&string_list, var_assignments);
+	ret = parse_redirections(toks, &string_list, redirs);
+	if (ret)
+		goto out_free_string_list;
 	list_splice_tail(&string_list, cmd_args);
 	*cmd_nargs_ret = list_size(cmd_args);
-	*num_redirs_ret = 0;
+	*num_redirs_ret = list_size(redirs);
 	ret = 0;
 	goto out;
-#if 0
-	bool is_first_redirection = true;
-	for (;;) {
-		struct token *next = tok->next;
-		const char *redir_source;
-		const char *redir_dest;
-
-		int ntokens_consumed;
-		int redir_type;
-
-		switch (tok->type) {
-#if 0
-		case TOK_GREATER_THAN:
-			if (!next) {
-				mysh_error("Unexpected end of statement after '>'");
-				ret = -1;
-				goto out_free_string_list;
-			}
-			switch (next->type) {
-			case TOK_AMPERSAND:
-				/* >& */
-				if (tok->preceded_by_whitespace) {
-				} else {
-					redir_source = NULL;
-				}
-				break;
-			case TOK_GREATER_THAN:
-				/* >> */
-				break;
-			}
-			break;
-#endif
-		case TOK_LESS_THAN:
-			/* redirecting input */
-			break;
-		case TOK_UNQUOTED_STRING:
-		case TOK_DOUBLE_QUOTED_STRING:
-		case TOK_SINGLE_QUOTED_STRING:
-			if (!list_empty(&redir_string_list))
-				expand_string(tok, &redir_string_list);
-			break;
-		default:
-			mysh_error(
-			goto out_free_string_list;
-		}
-		is_first_redirection = false;
-
-	}
-#endif
-out_free_string_lists:
-	free_string_list(&redir_string_list);
+out_free_string_list:
 	free_string_list(&string_list);
 out:
 	return ret;
-
-#if 0
-	while (tok->type & TOK_CLASS_REDIRECTION) {
-		if (!*redirs_ret)
-			*redirs_ret = tok;
-		if (!tok->next || !(tok->next->type & TOK_CLASS_STRING)) {
-			mysh_error("expected filename after redirection operator");
-			return -1;
-		}
-		tok = tok->next;
-		tok = tok->next;
-		if (!tok)
-			return 0;
-	}
-	if (is_last && tok->type == TOK_AMPERSAND) {
-		*async_ret = true;
-		tok = tok->next;
-	}
-	if (tok) {
-		mysh_error("found trailing tokens in command");
-		return -1;
-	}
-	return 0;
-#endif
 }

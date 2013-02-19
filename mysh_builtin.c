@@ -29,9 +29,8 @@ static int builtin_cd(unsigned argc, const char **argv)
 	}
 	if (chdir(dest_dir) != 0)
 		mysh_error_with_errno("cd: %s", dest_dir);
-	else {
+	else
 		ret = set_pwd();
-	}
 out:
 	return ret;
 }
