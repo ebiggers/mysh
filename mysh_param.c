@@ -175,6 +175,7 @@ static void free_param_trie(struct param_trie_node *node)
 void destroy_param_map()
 {
 	free_param_trie(&param_trie_root);
+	memset(&param_trie_root, 0, sizeof(param_trie_root));
 }
 
 #define SHELL_PARAM_ALPHA_CHAR      0x1
@@ -183,6 +184,12 @@ void destroy_param_map()
 #define SHELL_PARAM_SPECIAL_CHAR    0x8
 #define SHELL_PARAM_BEGIN_BRACE     0x10
 #define SHELL_PARAM_END_BRACE       0x20
+
+#define SHELL_NORMAL_PARAM_FIRST_CHAR \
+	(SHELL_PARAM_ALPHA_CHAR | SHELL_PARAM_UNDERSCORE_CHAR)
+
+#define SHELL_NORMAL_PARAM_CHAR \
+	(SHELL_NORMAL_PARAM_FIRST_CHAR | SHELL_PARAM_NUMERIC_CHAR)
 
 static const unsigned char shell_param_char_tab[256] = {
 	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
@@ -205,6 +212,20 @@ shell_param_char_type(char c)
 {
 	return shell_param_char_tab[(unsigned char)c];
 }
+
+bool string_matches_param_assignment(const struct string *s)
+{
+	size_t i;
+	if (!s->len)
+		return false;
+	if (!(shell_param_char_type(s->chars[0]) & SHELL_NORMAL_PARAM_FIRST_CHAR))
+		return false;
+	for (i = 1; i < s->len; i++)
+		if (!(shell_param_char_type(s->chars[i]) & SHELL_NORMAL_PARAM_CHAR))
+			return (s->chars[i] == '=');
+	return false;
+}
+
 
 /* Looks up a shell variable that is not a positional parameter or special
  * variable.  Note that this finds environmental variables as well, provided
@@ -363,9 +384,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 		if (*var_end == '{')
 			var_end++;
 		char_type = shell_param_char_type(*var_end);
-		if (char_type & (SHELL_PARAM_ALPHA_CHAR |
-				 SHELL_PARAM_NUMERIC_CHAR |
-				 SHELL_PARAM_UNDERSCORE_CHAR |
+		if (char_type & (SHELL_NORMAL_PARAM_CHAR |
 				 SHELL_PARAM_SPECIAL_CHAR))
 		{
 			if (char_type & SHELL_PARAM_NUMERIC_CHAR) {
@@ -376,8 +395,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 				mask = 0;
 			} else {
 				/* regular parameter */
-				mask = SHELL_PARAM_ALPHA_CHAR | SHELL_PARAM_NUMERIC_CHAR |
-				       SHELL_PARAM_UNDERSCORE_CHAR;
+				mask = SHELL_NORMAL_PARAM_CHAR;
 			}
 			do {
 				var_end++;

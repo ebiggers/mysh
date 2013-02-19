@@ -222,19 +222,43 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 	}
 }
 
+/* Performs filename expansion on a string using the glob() function.  For
+ * example, mysh_*.c could return [mysh_main.c, mysh_parm.c, ... etc.].  The ?
+ * character to indicate any character and bracketed character ranges are also
+ * allowed.
+ *
+ * If the string does not match any files as a glob, it is returned literally.
+ *
+ * @s:        The string to expand.  It will either be freed or transferred to
+ *            @out_list.
+ *
+ * @out_list: An empty list into which the resulting strings will be written.
+ *
+ * Returns 0 on success, or -1 on a read error in glob().
+ */
 static int
 string_do_filename_expansion(struct string *s, struct list_head *out_list)
 {
 	int ret;
 	glob_t glob_buf;
 
+	mysh_assert(list_empty(out_list));
 	ret = glob(s->chars,
 		   GLOB_NOESCAPE | GLOB_TILDE | GLOB_BRACE,
 		   NULL, &glob_buf);
 	if (ret) {
-		if (ret == GLOB_NOMATCH) {
+		switch (ret) {
+		case GLOB_NOMATCH:
+			/* If the glob does not match, use the literal string. */
 			list_add_tail(&s->list, out_list);
-		} else {
+			break;
+		case GLOB_NOSPACE:
+			/* Be consistent with xmalloc() and just abort the shell
+			 * if memory has been exhausted */
+			mysh_error_with_errno("out of memory");
+			exit(1);
+		default:
+			/* Other error, such as a read error. */
 			mysh_error_with_errno("glob()");
 			return -1;
 		}
@@ -243,6 +267,9 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
 		int flags;
 		struct string *s2;
 
+		/* glob completed successfully and produced one or more strings.
+		 * Free the original string, and add the new strings to
+		 * @out_list. */
  		flags = s->flags;
 		free_string(s);
 		for (i = 0; i < glob_buf.gl_pathc; i++) {
@@ -256,6 +283,9 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
 	return 0;
 }
 
+/* Performs filename expansion on a list of strings.  The list of strings is
+ * replaced with the list of expanded strings.  0 is returned on success; -1 is
+ * returned on read error in glob(). */
 static int
 do_filename_expansion(struct list_head *string_list)
 {
@@ -338,6 +368,37 @@ expand_params_and_word_split(struct token *tok, struct list_head *out_list)
 	return 0;
 }
 
+/* This function performs what I'm calling the "gluing" together of strings.
+ * For example, if you type
+ *
+ *   $ echo "a"'b'
+ *
+ * at the shell, the double-quoted string "a" will be glued together with the
+ * single-quoted string 'b' because they are not separated by any whitespace.
+ *
+ * This transformation occurs after parameter expansion and word splitting, but
+ * before filename expansion.  So, for example, "a"'b'* would be equivalent to
+ * ab*, and ${a}b would be equivalent to "a" "cb" if the shell variable $a is
+ * set to "a c".
+ *
+ * The input is a list @string_list that gives a list of strings passed to the
+ * shell.  Each string is glued to any adjacent, succeeding strings that have
+ * the flag STRING_FLAG_PRECEDING_WHITESPACE set, which indicates that they
+ * should be glued to the preceding string.  The resulting list of "glued"
+ * strings replaces the input list.
+ *
+ * This function also has a special responsibility where it looks for "glued"
+ * strings that are constructed from an unquoted string that did not have any
+ * parameter expansions that matches the regular expression
+ * [A-Za-z_][A-Za-z_0-9]*=.*, followed by zero or more unquoted or quoted
+ * strings.  So, for example, 
+ *   $ a="b"
+ *   $ a=b
+ *   $ a="b"'c'
+ *   $ a=           # this is legal; it unsets the variable a
+ * The glued strings of this form are interpreted as variable assignments, so
+ * the STRING_FLAG_VAR_ASSIGNMENT flag is set on these glued strings.
+ * */
 static int
 glue_strings(struct list_head *string_list)
 {
@@ -345,6 +406,8 @@ glue_strings(struct list_head *string_list)
 	LIST_HEAD(new_list);
 	while (!list_empty(string_list)) {
 		struct list_head *first = string_list->next;
+		int flags;
+		/* Glue one string */
 		LIST_HEAD(glue_list);
 		list_move_tail(first, &glue_list);
 		list_for_each_entry_safe(s, tmp, string_list, list) {
@@ -353,9 +416,19 @@ glue_strings(struct list_head *string_list)
 			else
 				list_move_tail(&s->list, &glue_list);
 		}
+		s = list_entry(first, struct string, list);
+		if ((s->flags & STRING_FLAG_UNQUOTED) &&
+		    !(s->flags & STRING_FLAG_PARAM_EXPANDED) &&
+		    string_matches_param_assignment(s))
+		{
+			flags = STRING_FLAG_VAR_ASSIGNMENT;
+		} else
+			flags = 0;
 		s = join_strings(&glue_list);
+		s->flags = flags;
 		list_add_tail(&s->list, &new_list);
 	}
+	/* Replace @string_list with the list of glued strings */
 	list_splice_tail(&new_list, string_list);
 	return 0;
 }
@@ -681,10 +754,11 @@ out:
 	return ret;
 }
 
-/* Execute a line of input to the shell.  On parse error, returns -1.  On memory
- * allocation failure, exits the shell with status 1.  Otherwise, the return
- * value is the exit status of the last command in the pipeline executed, or 0
- * if there were no commands in the pipeline (for example, just a comment). */
+/* Execute a line of input to the shell.  On parse error, returns -1.  On read
+ * errors with filename globbing, returns -1.  On memory allocation failure,
+ * immediately exits the shell with status 1.  Otherwise, the return value is
+ * the exit status of the last command in the pipeline executed, or 0 if there
+ * were no commands in the pipeline (for example, just a comment). */
 static int execute_line(const char *line)
 {
 	/* Parse the line into tokens, then pass control off to
