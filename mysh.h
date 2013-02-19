@@ -98,6 +98,8 @@ extern int mysh_exit_on_error;
 extern int mysh_write_input_to_stderr;
 extern int mysh_noexecute;
 
+extern int execute_full_shell_input(const char *input, size_t len);
+
 /* mysh_param.c */
 extern struct string *
 do_param_expansion(struct string *s, unsigned char **param_char_map);

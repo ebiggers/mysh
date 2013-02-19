@@ -132,7 +132,10 @@ start_child(const struct list_head * const cmd_args,
 	execvp(argv[0], argv);
 
 	/* Control only reaches here if execvp() failed */
-	mysh_error_with_errno("Failed to execute %s", argv[0]);
+	if (errno == ENOENT)
+		mysh_error("%s: command not found", argv[0]);
+	else
+		mysh_error_with_errno("Failed to execute %s", argv[0]);
 fail:
 	exit(-1);
 }
@@ -825,6 +828,28 @@ static int execute_shell_input(struct list_head *cur_tok_list,
 	return ret;
 }
 
+int execute_full_shell_input(const char *input, size_t len)
+{
+	int ret;
+	LIST_HEAD(tok_list);
+
+	((char*)input)[len++] = '\n';
+	ret = execute_shell_input(&tok_list, input, &len);
+	switch (ret) {
+	case LEX_ERROR:
+		mysh_last_exit_status = -1;
+		break;
+	case LEX_NOT_ENOUGH_INPUT:
+		mysh_error("unexpected end of input");
+		mysh_last_exit_status = -1;
+		break;
+	default:
+		mysh_last_exit_status = ret;
+		break;
+	}
+	return mysh_last_exit_status;
+}
+
 int main(int argc, char **argv)
 {
 	int c;
@@ -847,22 +872,7 @@ int main(int argc, char **argv)
 		case 'c':
 			/* execute string provided on the command line */
 			set_positional_params(argc - optind, argv[optind - 1], &argv[optind]);
-			input_buf = optarg;
-			input_buf_len = strlen(optarg) + 1;
-			input_buf[input_buf_len - 1] = '\n';
-			ret = execute_shell_input(&cur_tok_list, input_buf, &input_buf_len);
-			switch (ret) {
-			case LEX_ERROR:
-				mysh_last_exit_status = -1;
-				break;
-			case LEX_NOT_ENOUGH_INPUT:
-				mysh_error("unexpected end of input");
-				mysh_last_exit_status = -1;
-				break;
-			default:
-				mysh_last_exit_status = ret;
-				break;
-			}
+			execute_full_shell_input(optarg, strlen(optarg));
 			goto out;
 		case 's':
 			/* read from stdin */

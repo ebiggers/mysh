@@ -42,6 +42,16 @@ static int builtin_dummy(unsigned argc, const char **argv)
 	return 0;
 }
 
+/* Replace the shell process */
+static int builtin_exec(unsigned argc, const char **argv)
+{
+	if (argc == 0)
+		return 0;
+	execvp(argv[0], (char**)argv);
+	mysh_error_with_errno("failed to execute %s", argv[0]);
+	return -1;
+}
+
 /* Exit the shell */
 static int builtin_exit(unsigned argc, const char **argv)
 {
@@ -62,6 +72,32 @@ static int do_export(const char *var)
 	if (equals)
 		*(char*)equals = '=';
 	return ret;
+}
+
+/* Feed the arguments of the command back into the shell */
+static int builtin_eval(unsigned argc, const char **argv)
+{
+	size_t total_len = 0;
+	unsigned i;
+	char *p;
+
+	if (argc == 0)
+		return 0;
+	i = 0;
+	do {
+		total_len += strlen(argv[i]);
+	} while (++i != argc);
+	total_len += argc - 1;
+
+	char input[total_len + 1];
+	p = input;
+	i = 0;
+	do {
+		p = stpcpy(p, argv[i]);
+		if (i != argc - 1)
+			p = stpcpy(p, " ");
+	} while (++i != argc);
+	return execute_full_shell_input(input, total_len);
 }
 
 /* Export environmental variables */
@@ -252,8 +288,7 @@ struct builtin {
 	const char *name;
 
 	/* Function to execute the builtin command.  Note: for these functions,
-	 * argv is not NULL-terminated, and argv[0] is the first argument rather
-	 * than the builtin name. */
+	 * argv[0] is the first argument rather than the builtin name. */
 	int (*func)(unsigned argc, const char **argv);
 
 	/* Help text */
@@ -267,8 +302,10 @@ static int builtin_help(unsigned argc, const char **argv);
 static const struct builtin builtins[] = {
 	{":",      builtin_dummy,  ":"},
 	{"cd",     builtin_cd,     "cd [DIR]"},
+	{"eval",   builtin_eval,   "eval [arg ...]"},
+	{"exec",   builtin_exec,   "exec [command [arguments ...]]"},
 	{"exit",   builtin_exit,   "exit [STATUS]"},
-	{"export", builtin_export, "export VARIABLE[=VALUE]..."},
+	{"export", builtin_export, "export VARIABLE[=VALUE ..."},
 	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
 	{"help",   builtin_help,   "help [COMMAND]"},
 	{"pwd",    builtin_pwd,    "pwd"},
@@ -322,7 +359,7 @@ static int execute_builtin(const struct builtin *builtin,
 			   unsigned cmd_nargs)
 {
 	struct orig_fds orig = {-1, -1};
-	const char *argv[cmd_nargs];
+	const char *argv[cmd_nargs + 1];
 	struct string *s;
 	unsigned i;
 	int status;
@@ -340,6 +377,7 @@ static int execute_builtin(const struct builtin *builtin,
 	{
 		argv[i] = s->chars;
 	}
+	argv[i] = NULL;
 	/* Call the builtin function */
 	builtin->func(cmd_nargs, argv);
 
