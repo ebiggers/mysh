@@ -62,14 +62,18 @@
 
 
 /* globals */
-int last_exit_status;
-
+int mysh_last_exit_status;
+int mysh_filename_expansion_disabled;
+int mysh_exit_on_error;
+int mysh_write_input_to_stderr;
+int mysh_noexecute;
 
 /* Executed by the child process after a fork().  The child now must set up
  * redirections of stdin and stdout (if any) and execute the new program. */
 static void
 start_child(const struct list_head * const cmd_args,
 	    const struct list_head * const redirs,
+	    const struct list_head * const var_assignments,
 	    const unsigned cmd_nargs,
 	    const unsigned pipeline_cmd_idx,
 	    const unsigned pipeline_ncommands,
@@ -113,6 +117,15 @@ start_child(const struct list_head * const cmd_args,
 	list_for_each_entry(s, cmd_args, list)
 		argv[i++] = s->chars;
 	argv[i] = NULL;
+
+	/* Set any environmental variables for this command */
+	list_for_each_entry(s, var_assignments, list) {
+		if (putenv(s->chars)) {
+			mysh_error_with_errno("Failed to set environmental "
+					      "variable %s", s->chars);
+			goto fail;
+		}
+	}
 
 	/* Execute the new program */
 	execvp(argv[0], argv);
@@ -166,8 +179,6 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 	const char *chars;
 	struct string *s2;
 	size_t i;
-
-	mysh_assert(list_empty(out_list));
 
 	chars = s->chars;
 	i = 0;
@@ -232,7 +243,8 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
  * @s:        The string to expand.  It will either be freed or transferred to
  *            @out_list.
  *
- * @out_list: An empty list into which the resulting strings will be written.
+ * @out_list: A list to which the resulting strings will be appended.  It will
+ *            not necessarily be empty.
  *
  * Returns 0 on success, or -1 on a read error in glob().
  */
@@ -242,7 +254,6 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
 	int ret;
 	glob_t glob_buf;
 
-	mysh_assert(list_empty(out_list));
 	ret = glob(s->chars,
 		   GLOB_NOESCAPE | GLOB_TILDE | GLOB_BRACE,
 		   NULL, &glob_buf);
@@ -290,7 +301,7 @@ static int
 do_filename_expansion(struct list_head *string_list)
 {
 	struct string *s, *tmp;
-	int ret;
+	int ret = 0;
 
 	LIST_HEAD(new_list);
 	list_for_each_entry_safe(s, tmp, string_list, list)
@@ -433,17 +444,32 @@ glue_strings(struct list_head *string_list)
 	return 0;
 }
 
+static void transfer_var_assignments(struct list_head *string_list,
+				     struct list_head *var_assignments)
+{
+	struct string *s, *tmp;
+	list_for_each_entry_safe(s, tmp, string_list, list) {
+		if (s->flags & STRING_FLAG_VAR_ASSIGNMENT)
+			list_move_tail(&s->list, var_assignments);
+		else
+			break;
+	}
+}
+
 static int
 parse_tok_list(struct token *tok,
 	       const bool is_last,
 	       bool *async_ret,
 	       struct list_head *cmd_args,
+	       struct list_head *var_assignments,
+	       struct list_head *redirs,
 	       unsigned *cmd_nargs_ret,
-	       unsigned *nleading_var_assignments_ret,
-	       struct list_head *redirs)
+	       unsigned *num_redirs_ret)
 {
-
 	int ret;
+	mysh_assert(list_empty(var_assignments));
+	mysh_assert(list_empty(cmd_args));
+	mysh_assert(list_empty(redirs));
 	LIST_HEAD(string_list);
 	LIST_HEAD(redir_string_list);
 	while (tok->type & TOK_CLASS_STRING) {
@@ -459,14 +485,16 @@ parse_tok_list(struct token *tok,
 	ret = glue_strings(&string_list);
 	if (ret)
 		goto out_free_string_lists;
-	ret = do_filename_expansion(&string_list);
-	if (ret)
-		goto out_free_string_lists;
-	INIT_LIST_HEAD(cmd_args);
-	INIT_LIST_HEAD(redirs);
+	if (!mysh_filename_expansion_disabled) {
+		ret = do_filename_expansion(&string_list);
+		if (ret)
+			goto out_free_string_lists;
+	}
+	transfer_var_assignments(&string_list, var_assignments);
 	list_splice_tail(&string_list, cmd_args);
 	*cmd_nargs_ret = list_size(cmd_args);
-	*nleading_var_assignments_ret = 0;
+	*num_redirs_ret = 0;
+	ret = 0;
 	goto out;
 #if 0
 	bool is_first_redirection = true;
@@ -548,14 +576,11 @@ out:
 #endif
 }
 
-static int process_var_assignments(const struct token *assignments,
-				   unsigned num_assignments)
+static int process_var_assignments(const struct list_head *assignments)
 {
-	const struct token *tok = assignments;
-	while (num_assignments--) {
-		make_param_assignment(tok->tok_data);
-		tok = tok->next;
-	}
+	struct string *s;
+	list_for_each_entry(s, assignments, list)
+		make_param_assignment(s->chars);
 	return 0;
 }
 
@@ -568,8 +593,9 @@ static int execute_pipeline(struct token **pipe_commands,
 	bool async;
 	struct list_head redir_lists[ncommands];
 	struct list_head cmd_arg_lists[ncommands];
+	struct list_head var_assignment_lists[ncommands];
 	unsigned cmd_nargs[ncommands];
-	unsigned nleading_var_assignments[ncommands];
+	unsigned num_redirs[ncommands];
 
 	unsigned cmd_idx;
 	int pipe_fds[2];
@@ -580,18 +606,23 @@ static int execute_pipeline(struct token **pipe_commands,
 	for (i = 0; i < ncommands; i++) {
 		INIT_LIST_HEAD(&cmd_arg_lists[i]);
 		INIT_LIST_HEAD(&redir_lists[i]);
+		INIT_LIST_HEAD(&var_assignment_lists[i]);
 	}
 	for (i = 0; i < ncommands; i++) {
 		ret = parse_tok_list(pipe_commands[i],
 				     (i == ncommands - 1),
 				     &async,
 				     &cmd_arg_lists[i],
+				     &var_assignment_lists[i],
+				     &redir_lists[i],
 				     &cmd_nargs[i],
-				     &nleading_var_assignments[i],
-				     &redir_lists[i]);
+				     &num_redirs[i]);
 		if (ret)
 			goto out_free_lists;
 	}
+
+	if (mysh_noexecute)
+		return 0;
 
 	/* If the pipeline only has one command and is not being executed
 	 * asynchronously, try interpreting the command as a builtin.  Note:
@@ -606,8 +637,7 @@ static int execute_pipeline(struct token **pipe_commands,
 		/* if there are no arguments, just process leading variable
 		 * assignments */
 		if (cmd_nargs[0] == 0) {
-			ret = process_var_assignments(pipe_commands[0],
-						      nleading_var_assignments[0]);
+			ret = process_var_assignments(&var_assignment_lists[0]);
 			goto out_free_lists;
 		}
 	}
@@ -652,7 +682,9 @@ static int execute_pipeline(struct token **pipe_commands,
 			goto out_close_pipes;
 		} else if (ret == 0) {
 			/* Child: set up file descriptors and execute new process */
-			start_child(&cmd_arg_lists[cmd_idx], &redir_lists[cmd_idx],
+			start_child(&cmd_arg_lists[cmd_idx],
+				    &redir_lists[cmd_idx],
+				    &var_assignment_lists[cmd_idx],
 				    cmd_nargs[cmd_idx], cmd_idx, ncommands,
 				    pipe_fds, prev_read_end);
 		} else {
@@ -689,9 +721,11 @@ out_close_pipes:
 		}
 	}
 out_free_lists:
-	for (i = 0; i < ncommands; i++)
+	for (i = 0; i < ncommands; i++) {
 		free_string_list(&cmd_arg_lists[i]);
-	/* XXX redirs */
+		free_string_list(&var_assignment_lists[i]);
+		free_string_list(&redir_lists[i]);
+	}
 	return ret;
 }
 
@@ -795,24 +829,28 @@ int main(int argc, char **argv)
 	char *line;
 	size_t n;
 	bool from_stdin = false;
+	bool interactive = false;
 
 	set_up_signal_handlers();
 	init_param_map();
 
-	while ((c = getopt(argc, argv, "c:s")) != -1) {
+	while ((c = getopt(argc, argv, "c:is")) != -1) {
 		switch (c) {
 		case 'c':
 			/* execute string provided on the command line */
 			set_positional_params(argc - optind, argv[0], &argv[optind]);
-			last_exit_status = execute_line(optarg);
+			mysh_last_exit_status = execute_line(optarg);
 			goto out;
 		case 's':
 			/* read from stdin */
 			from_stdin = true;
 			break;
+		case 'i':
+			interactive = true;
+			break;
 		default:
 			mysh_error("invalid option");
-			last_exit_status = 2;
+			mysh_last_exit_status = 2;
 			goto out;
 		}
 	}
@@ -825,7 +863,7 @@ int main(int argc, char **argv)
 		in = fopen(argv[0], "rb");
 		if (!in) {
 			mysh_error_with_errno("can't open %s", argv[0]);
-			last_exit_status = -1;
+			mysh_last_exit_status = -1;
 			goto out;
 		}
 		set_positional_params(argc - 1, argv[-1], argv + 1);
@@ -833,25 +871,30 @@ int main(int argc, char **argv)
 		set_positional_params(argc, argv[-1], argv);
 		in = stdin;
 	}
+	if (isatty(fileno(in)))
+		interactive = true;
 
-	last_exit_status = 0;
+	mysh_last_exit_status = 0;
 	line = NULL;
 	while (1) {
-		if (in == stdin)
+		if (interactive)
 			fprintf(stdout, "%s $ ", lookup_shell_param("PWD"));
 		if (getline(&line, &n, in) == -1)
 			break;
-		last_exit_status = execute_line(line);
+		if (mysh_write_input_to_stderr)
+			fputs(line, stderr);
+		mysh_last_exit_status = execute_line(line);
+		if (mysh_last_exit_status != 0 && mysh_exit_on_error)
+			break;
 	}
-
 	if (ferror(in)) {
 		mysh_error_with_errno("error reading input");
-		last_exit_status = -1;
+		mysh_last_exit_status = -1;
 	}
 	fclose(in);
 	free(line);
 out:
 	destroy_positional_params();
 	destroy_param_map();
-	return last_exit_status;
+	return mysh_last_exit_status;
 }

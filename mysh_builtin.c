@@ -123,6 +123,78 @@ out:
 	return ret;
 }
 
+static int *shell_options[127] = {
+	['f'] = &mysh_filename_expansion_disabled,
+	['e'] = &mysh_exit_on_error,
+	['v'] = &mysh_write_input_to_stderr,
+	['n'] = &mysh_noexecute,
+};
+
+static int set_or_unset_shell_option(char option, int value)
+{
+	if ((unsigned char)option >= ARRAY_SIZE(shell_options) ||
+	    shell_options[(unsigned char)option] == NULL)
+	{
+		mysh_error("set: unknown option '%c'", option);
+		return -1;
+	} else {
+		*shell_options[(unsigned char)option] = value;
+		return 0;
+	}
+}
+
+static int set_or_unset_options_in_string(const char *string, int value)
+{
+	int ret = 0;
+	while (*string) {
+		ret |= set_or_unset_shell_option(*string, value);
+		string++;
+	}
+	return ret;
+}
+
+static int builtin_set(unsigned argc, const char **argv)
+{
+	const char *pos_params[argc];
+	unsigned pos_params_idx;
+	unsigned i;
+	int ret;
+
+	if (argc == 0) {
+		ret = print_all_shell_variables();
+		goto out;
+	}
+	pos_params_idx = 0;
+	for (i = 0; i < argc; i++) {
+		switch (argv[i][0]) {
+		case '-':
+			if (argv[i][1] == '-' && argv[i][2] == '\0') {
+				i++;
+				goto remaining_params;
+			}
+			/* Fall through */
+		case '+':
+			ret = set_or_unset_options_in_string(argv[i] + 1, (argv[i][0] == '-'));
+			if (ret)
+				goto out;
+			break;
+		default:
+			pos_params[pos_params_idx++] = argv[i];
+			break;
+		}
+	}
+remaining_params:
+	for (; i < argc; i++)
+		pos_params[pos_params_idx++] = argv[i];
+	if (pos_params_idx != 0) {
+		set_positional_params(pos_params_idx,
+				      positional_parameters[0],
+				      (char**)pos_params);
+	}
+	ret = 0;
+out:
+	return ret;
+}
 
 /* Set the value of an environmental variable */
 static int builtin_setenv(unsigned argc, const char **argv)
@@ -200,6 +272,7 @@ static const struct builtin builtins[] = {
 	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
 	{"help",   builtin_help,   "help [COMMAND]"},
 	{"pwd",    builtin_pwd,    "pwd"},
+	{"set",    builtin_set,    "set [[-+]fev] [--] [arg ...]"},
 	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
 	{"shift",  builtin_shift,  "shift [N]"},
 };

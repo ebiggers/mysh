@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+char *all_positional_params;
 char **positional_parameters;
 unsigned int num_positional_parameters;
 
@@ -35,22 +36,33 @@ new_trie_node()
 extern char **environ;
 
 static char trie_slot_tab[256];
+static char trie_slot_to_char_tab[NUM_SHELL_PARAM_VALID_CHARS];
+
+static const unsigned char trie_slot_ranges[][2] = {
+	{'a', 'z'},
+	{'A', 'Z'},
+	{'0', '9'},
+	{'_', '_'},
+};
 
 /* Initialize a table to map from the %NUM_SHELL_PARAM_VALID_CHARS allowed shell
  * variable characters to a numbering [0, %NUM_SHELL_PARAM_VALID_CHARS - 1]. */
 static void init_trie_slot_tab()
 {
-	int i, n;
+	unsigned i, n;
 	for (i = 0; i < 256; i++)
 		trie_slot_tab[i] = -1;
 	n = 0;
-	for (i = 'a'; i <= 'z'; i++)
-		trie_slot_tab[i] = n++;
-	for (i = 'A'; i <= 'Z'; i++)
-		trie_slot_tab[i] = n++;
-	for (i = '0'; i <= '9'; i++)
-		trie_slot_tab[i] = n++;
-	trie_slot_tab['_'] = n++;
+	for (i = 0; i < ARRAY_SIZE(trie_slot_ranges); i++) {
+		unsigned char range_begin = trie_slot_ranges[i][0];
+		unsigned char range_end = trie_slot_ranges[i][1];
+		unsigned char c;
+		for (c = range_begin; c <= range_end; c++) {
+			trie_slot_tab[c] = n;
+			trie_slot_to_char_tab[n] = c;
+			n++;
+		}
+	}
 	mysh_assert(n == NUM_SHELL_PARAM_VALID_CHARS);
 }
 
@@ -200,9 +212,9 @@ static const unsigned char shell_param_char_tab[256] = {
 	['*']         = SHELL_PARAM_SPECIAL_CHAR,
 	['#']         = SHELL_PARAM_SPECIAL_CHAR,
 	['?']         = SHELL_PARAM_SPECIAL_CHAR,
-	['-']         = SHELL_PARAM_SPECIAL_CHAR,
+	/*['-']         = SHELL_PARAM_SPECIAL_CHAR,*/
 	['$']         = SHELL_PARAM_SPECIAL_CHAR,
-	['!']         = SHELL_PARAM_SPECIAL_CHAR,
+	/*['!']         = SHELL_PARAM_SPECIAL_CHAR,*/
 	['{']         = SHELL_PARAM_BEGIN_BRACE,
 	['}']         = SHELL_PARAM_END_BRACE,
 };
@@ -216,8 +228,6 @@ shell_param_char_type(char c)
 bool string_matches_param_assignment(const struct string *s)
 {
 	size_t i;
-	if (!s->len)
-		return false;
 	if (!(shell_param_char_type(s->chars[0]) & SHELL_NORMAL_PARAM_FIRST_CHAR))
 		return false;
 	for (i = 1; i < s->len; i++)
@@ -256,13 +266,31 @@ lookup_shell_param(const char *name)
 	return lookup_shell_param_len(name, strlen(name));
 }
 
+static char *get_all_positional_params()
+{
+	size_t total_len = 0;
+	unsigned i;
+	char *p;
+
+	if (all_positional_params)
+		free(all_positional_params);
+	for (i = 1; i <= num_positional_parameters; i++)
+		total_len += strlen(positional_parameters[i]);
+	total_len += num_positional_parameters;
+	all_positional_params = p = xmalloc(total_len);
+	for (i = 1; i <= num_positional_parameters; i++) {
+		p = stpcpy(p, positional_parameters[i]);
+		if (i != num_positional_parameters)
+			p = stpcpy(p, " ");
+	}
+	return all_positional_params;
+}
 /* Looks up a shell variable that may be a regular variable, a positional
  * parameter, or a special variable. */
 const char *
 lookup_param(const char *name, size_t len)
 {
 	static char buf[20];
-
 	unsigned char char_type = shell_param_char_type(*name);
 	if (char_type & SHELL_PARAM_NUMERIC_CHAR) {
 		/* Positional parameter */
@@ -284,18 +312,75 @@ lookup_param(const char *name, size_t len)
 			return buf;
 		case '?':
 			/* $?: Exit status of last command */
-			sprintf(buf, "%d", last_exit_status);
+			sprintf(buf, "%d", mysh_last_exit_status);
 			return buf;
 		case '#':
 			/* $#: Number of positional parameters */
 			sprintf(buf, "%u", num_positional_parameters);
 			return buf;
+		case '*':
+		case '@': /* Note: $@ does not yet behave correctly (it's treated the same as $*) */
+			/* All positional parameters */
+			return get_all_positional_params();
 		}
 	} else {
 		/* Regular variable; look it up in the trie. */
 		return lookup_shell_param_len(name, len);
 	}
 	return NULL;
+}
+
+static int node_print_variable(struct param_trie_node *node)
+{
+	size_t len;
+	size_t i;
+	struct param_trie_node *p;
+	int ret;
+
+	p = node;
+	len = 0;
+	while (p != &param_trie_root) {
+		p = p->parent;
+		len++;
+	}
+	char name[len + 1];
+	name[len] = '\0';
+
+	p = node;
+	i = len - 1;
+	do {
+		name[i] = trie_slot_to_char_tab[p->parent_child_ptr - p->parent->children];
+		p = p->parent;
+	} while (i-- != 0);
+	ret = printf("%s='%s'\n", name, node->value);
+	if (ret >= 0)
+		ret = 0;
+	return 0;
+}
+
+static int do_print_all_shell_variables(struct param_trie_node *node)
+{
+	size_t i;
+	int ret = 0;
+	if (node->value) {
+		ret = node_print_variable(node);
+		if (ret)
+			goto out;
+	}
+	for (i = 0; i < ARRAY_SIZE(node->children); i++) {
+		if (node->children[i]) {
+			ret = do_print_all_shell_variables(node->children[i]);
+			if (ret)
+				goto out;
+		}
+	}
+out:
+	return ret;
+}
+
+int print_all_shell_variables()
+{
+	return do_print_all_shell_variables(&param_trie_root);
 }
 
 static void
@@ -489,5 +574,10 @@ void destroy_positional_params()
 		for (i = 0; i <= num_positional_parameters; i++)
 			free(positional_parameters[i]);
 		free(positional_parameters);
+		positional_parameters = NULL;
+		if (all_positional_params) {
+			free(all_positional_params);
+			all_positional_params = NULL;
+		}
 	}
 }

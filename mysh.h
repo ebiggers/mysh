@@ -84,7 +84,11 @@ extern bool maybe_execute_builtin(const struct list_head *command_toks,
 				  int *status_ret);
 
 /* mysh_main.c */
-extern int last_exit_status;
+extern int mysh_last_exit_status;
+extern int mysh_filename_expansion_disabled;
+extern int mysh_exit_on_error;
+extern int mysh_write_input_to_stderr;
+extern int mysh_noexecute;
 
 /* mysh_param.c */
 extern struct string *
@@ -103,7 +107,9 @@ extern void make_param_assignment(const char *assignment);
 extern bool string_matches_param_assignment(const struct string *s);
 extern void destroy_positional_params();
 extern void destroy_param_map();
+extern int print_all_shell_variables();
 
+extern char *all_positional_params;
 extern char **positional_parameters;
 extern unsigned int num_positional_parameters;
 
