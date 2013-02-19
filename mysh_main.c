@@ -744,7 +744,6 @@ static int execute_tok_list(struct list_head *tok_list)
 {
 	struct token *tok, *tmp;
 	unsigned ncommands;
-	unsigned cmd_idx;
 	unsigned i;
 	int ret;
 	struct list_head *cur_list;
@@ -758,15 +757,14 @@ static int execute_tok_list(struct list_head *tok_list)
 
 	struct list_head command_tokens[ncommands];
 
+	for (i = 0; i < ncommands; i++)
+		INIT_LIST_HEAD(&command_tokens[i]);
+
 	if (list_is_singular(tok_list)) {
 		ret = 0;
 		goto out;
 	}
 
-	for (i = 0; i < ncommands; i++)
-		INIT_LIST_HEAD(&command_tokens[i]);
-
-	cmd_idx = 0;
 	cur_list = &command_tokens[0];
 	list_for_each_entry_safe(tok, tmp, tok_list, list) {
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
@@ -777,13 +775,13 @@ static int execute_tok_list(struct list_head *tok_list)
 			}
 			cur_list++;
 		} else {
-			list_move(&tok->list, cur_list);
+			list_move_tail(&tok->list, cur_list);
 		}
 	}
-	ret = execute_pipeline(command_tokens, cmd_idx);
+	ret = execute_pipeline(command_tokens, ncommands);
 out:
 	free_tok_list(tok_list);
-	for (i = 0; i < cmd_idx; i++)
+	for (i = 0; i < ncommands; i++)
 		free_tok_list(&command_tokens[i]);
 	return ret;
 }
@@ -797,22 +795,59 @@ static void set_up_signal_handlers()
 		mysh_error_with_errno("Failed to set up signal handlers");
 }
 
-#define DEFAULT_INPUT_BUFSIZE 32768
+#define DEFAULT_INPUT_BUFSIZE 15
 
 static int execute_shell_input(struct list_head *cur_tok_list,
 			       const char *input,
 			       size_t *bytes_remaining_p)
 {
-	int ret;
-	struct token *tok;
-	do {
-		ret = lex_next_token(input, bytes_remaining_p, &tok);
-		if (ret)
+	int ret = 0;
+	size_t bytes_remaining = *bytes_remaining_p;
+	while (bytes_remaining) {
+		struct token *tok;
+		do {
+			size_t bytes_lexed;
+
+			ret = lex_next_token(input, bytes_remaining_p, &tok);
+			if (ret)
+				return ret;
+			bytes_lexed = bytes_remaining - *bytes_remaining_p;
+			if (mysh_write_input_to_stderr)
+				fwrite(input, 1, bytes_lexed, stderr);
+			input += bytes_lexed;
+			bytes_remaining -= bytes_lexed;
+			/*printf("tok->type = %d, data=%s\n", tok->type, tok->tok_data);*/
+			list_add_tail(&tok->list, cur_tok_list);
+		} while (tok->type != TOK_END_OF_SHELL_STATEMENT);
+		ret = execute_tok_list(cur_tok_list);
+		if (ret && mysh_exit_on_error)
 			return ret;
-		list_add_tail(&tok->list, cur_tok_list);
-	} while (tok->type != TOK_END_OF_SHELL_STATEMENT);
-	return execute_tok_list(cur_tok_list);
+	}
+	return ret;
 }
+
+#if 0
+static int execute_shell_input(struct list_head *cur_tok_list,
+			       const char *input,
+			       size_t *bytes_remaining_p)
+{
+	while (*bytes_remaining_p) {
+		size_t bytes_remaining = *bytes_remaining_p;
+		ret = execute_shell_statement(&cur_tok_list,
+					      input,
+					      bytes_remaining_p);
+		if (ret == LEX_NOT_ENOUGH_INPUT || ret == LEX_ERROR) {
+			return ret;
+		} else {
+			if (ret != 0 && mysh_exit_on_error)
+				return ret;
+			input += bytes_remaining - *bytes_remaining_p;
+		}
+		if (mysh_last_exit_status != 0 && mysh_exit_on_error)
+			goto out_break_read_loop;
+	}
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -883,11 +918,13 @@ int main(int argc, char **argv)
 	for (;;) {
 		ssize_t bytes_read;
 		size_t bytes_remaining;
+		size_t bytes_to_read;
 
-		fprintf(stderr, "printed prompt\n");
 		/* Print command prompt */
-		if (interactive)
-			fprintf(stdout, "%s $ ", lookup_shell_param("PWD"));
+		if (interactive) {
+			printf("%s $ ", lookup_shell_param("PWD"));
+			fflush(stdout);
+		}
 
 	read_again_check_buffer:
 		/* Check whether less than half the distance to the end of the
@@ -908,13 +945,13 @@ int main(int argc, char **argv)
 		}
 
 	read_again:
+		bytes_to_read = input_buf_len - input_data_end;
 		/* Read data into the buffer */
-		bytes_read = read(in_fd, &input_buf[input_data_end],
-				  input_buf_len - input_data_end);
+		bytes_read = read(in_fd, &input_buf[input_data_end], bytes_to_read);
 		if (bytes_read == 0) {
 			/* EOF */
 			if (input_data_end - input_data_begin != 0) {
-				mysh_error("Unexpected end of input");
+				mysh_error("unexpected end of input");
 				mysh_last_exit_status = -1;
 			}
 			break;
@@ -927,26 +964,24 @@ int main(int argc, char **argv)
 			break;
 		} else {
 			/* Successful read */
+
 			input_data_end += bytes_read;
 			mysh_assert(input_data_end <= input_buf_len);
 			bytes_remaining = input_data_end - input_data_begin;
 
 			/* Execute as many commands as possible */
-			for (;;) {
-				ret = execute_shell_input(&cur_tok_list,
-							  input_buf,
-							  &bytes_remaining);
-				if (ret == LEX_ERROR) {
-					mysh_last_exit_status = -1;
-					goto out_break_read_loop;
-				} else if (ret == LEX_NOT_ENOUGH_INPUT) {
-					goto read_again_check_buffer;
-				} else {
-					mysh_last_exit_status = ret;
-					mysh_assert(input_data_begin +
-						    bytes_remaining <= input_data_end);
-					input_data_begin = input_data_end - bytes_remaining;
-				}
+			ret = execute_shell_input(&cur_tok_list,
+						  &input_buf[input_data_begin],
+						  &bytes_remaining);
+			switch (ret) {
+			case LEX_ERROR:
+				mysh_last_exit_status = -1;
+				goto out_break_read_loop;
+			case LEX_NOT_ENOUGH_INPUT:
+				goto read_again_check_buffer;
+			default:
+				mysh_last_exit_status = ret;
+				input_data_begin = input_data_end - bytes_remaining;
 				if (mysh_last_exit_status != 0 && mysh_exit_on_error)
 					goto out_break_read_loop;
 			}

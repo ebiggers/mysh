@@ -88,6 +88,7 @@ static const unsigned char is_special[256] = {
 	['"']  = 1,
 	['&']  = 1,
 	['#']  = 1,
+	[';']  = 1,
 	['|']  = 1,
 	['>']  = 1,
 	['<']  = 1,
@@ -104,7 +105,7 @@ static ssize_t scan_unquoted_string(const char *p,
 	ssize_t len = 0;
 	bool escape = false;
 	size_t bytes_remaining = *bytes_remaining_p;
-	for (;;) {
+	for (;; p++, bytes_remaining--) {
 		if (!bytes_remaining)
 			return LEX_NOT_ENOUGH_INPUT;
 		if (is_special[(unsigned char)*p]) {
@@ -125,8 +126,6 @@ static ssize_t scan_unquoted_string(const char *p,
 		if (out_buf)
 			*out_buf++ = *p;
 		len++;
-		p++;
-		bytes_remaining--;
 		escape = false;
 	}
 	*bytes_remaining_p = bytes_remaining;
@@ -227,7 +226,7 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 		/* anything that didn't match one of the special characters is
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
-		ret = lex_string(p + 1, scan_unquoted_string, &bytes_remaining, &tok_data);
+		ret = lex_string(p, scan_unquoted_string, &bytes_remaining, &tok_data);
 		if (ret < 0)
 			return ret;
 		break;
