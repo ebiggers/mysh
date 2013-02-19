@@ -1,3 +1,7 @@
+/*
+ * mysh_parse.c
+ */
+
 #include "mysh.h"
 #include <ctype.h>
 #include <glob.h>
@@ -163,8 +167,7 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
 /* Performs filename expansion on a list of strings.  The list of strings is
  * replaced with the list of expanded strings.  0 is returned on success; -1 is
  * returned on read error in glob(). */
-static int
-do_filename_expansion(struct list_head *string_list)
+static int do_filename_expansion(struct list_head *string_list)
 {
 	struct string *s, *tmp;
 	int ret = 0;
@@ -180,11 +183,10 @@ do_filename_expansion(struct list_head *string_list)
 	return ret;
 }
 
-/* Do parameter expansion and word splitting */
-static int
-expand_params_and_word_split(struct token *tok,
-			     bool have_next_token,
-			     struct list_head *out_list)
+/* Do parameter expansion and word splitting.  */
+static int expand_params_and_word_split(struct token *tok,
+					bool have_next_token,
+					struct list_head *out_list)
 {
 	struct string *s;
 	bool leading_whitespace;
@@ -278,8 +280,7 @@ expand_params_and_word_split(struct token *tok,
  * The glued strings of this form are interpreted as variable assignments, so
  * the STRING_FLAG_VAR_ASSIGNMENT flag is set on these glued strings.
  * */
-static int
-glue_strings(struct list_head *string_list)
+static int glue_strings(struct list_head *string_list)
 {
 	struct string *s, *tmp;
 	LIST_HEAD(new_list);
@@ -324,15 +325,18 @@ static void transfer_var_assignments(struct list_head *string_list,
 	}
 }
 
-int
-parse_tok_list(struct list_head *toks,
-	       const bool is_last,
-	       bool *async_ret,
-	       struct list_head *cmd_args,
-	       struct list_head *var_assignments,
-	       struct list_head *redirs,
-	       unsigned *cmd_nargs_ret,
-	       unsigned *num_redirs_ret)
+/* Given a list of tokens that make up a component of a pipeline, parse the
+ * tokens into the command arguments, the variable assignments (if any), and the
+ * redirections (if any).  In the process, do parameter expansion, word
+ * splitting, word gluing, and filename globbing. */
+int parse_tok_list(struct list_head *toks,
+		   const bool is_last,
+		   bool *async_ret,
+		   struct list_head *cmd_args,
+		   struct list_head *var_assignments,
+		   struct list_head *redirs,
+		   unsigned *cmd_nargs_ret,
+		   unsigned *num_redirs_ret)
 {
 	struct token *tok;
 	int ret;
