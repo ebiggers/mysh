@@ -795,7 +795,7 @@ static void set_up_signal_handlers()
 		mysh_error_with_errno("Failed to set up signal handlers");
 }
 
-#define DEFAULT_INPUT_BUFSIZE 15
+#define DEFAULT_INPUT_BUFSIZE 4096
 
 static int execute_shell_input(struct list_head *cur_tok_list,
 			       const char *input,
@@ -816,7 +816,6 @@ static int execute_shell_input(struct list_head *cur_tok_list,
 				fwrite(input, 1, bytes_lexed, stderr);
 			input += bytes_lexed;
 			bytes_remaining -= bytes_lexed;
-			/*printf("tok->type = %d, data=%s\n", tok->type, tok->tok_data);*/
 			list_add_tail(&tok->list, cur_tok_list);
 		} while (tok->type != TOK_END_OF_SHELL_STATEMENT);
 		ret = execute_tok_list(cur_tok_list);
@@ -825,29 +824,6 @@ static int execute_shell_input(struct list_head *cur_tok_list,
 	}
 	return ret;
 }
-
-#if 0
-static int execute_shell_input(struct list_head *cur_tok_list,
-			       const char *input,
-			       size_t *bytes_remaining_p)
-{
-	while (*bytes_remaining_p) {
-		size_t bytes_remaining = *bytes_remaining_p;
-		ret = execute_shell_statement(&cur_tok_list,
-					      input,
-					      bytes_remaining_p);
-		if (ret == LEX_NOT_ENOUGH_INPUT || ret == LEX_ERROR) {
-			return ret;
-		} else {
-			if (ret != 0 && mysh_exit_on_error)
-				return ret;
-			input += bytes_remaining - *bytes_remaining_p;
-		}
-		if (mysh_last_exit_status != 0 && mysh_exit_on_error)
-			goto out_break_read_loop;
-	}
-}
-#endif
 
 int main(int argc, char **argv)
 {
@@ -874,9 +850,19 @@ int main(int argc, char **argv)
 			input_buf = optarg;
 			input_buf_len = strlen(optarg) + 1;
 			input_buf[input_buf_len - 1] = '\n';
-			mysh_last_exit_status = execute_shell_input(&cur_tok_list,
-								    input_buf,
-								    &input_buf_len);
+			ret = execute_shell_input(&cur_tok_list, input_buf, &input_buf_len);
+			switch (ret) {
+			case LEX_ERROR:
+				mysh_last_exit_status = -1;
+				break;
+			case LEX_NOT_ENOUGH_INPUT:
+				mysh_error("unexpected end of input");
+				mysh_last_exit_status = -1;
+				break;
+			default:
+				mysh_last_exit_status = ret;
+				break;
+			}
 			goto out;
 		case 's':
 			/* read from stdin */
@@ -940,7 +926,8 @@ int main(int argc, char **argv)
 				input_data_end = bytes_remaining;
 			} else if (input_data_end == input_buf_len) {
 				/* Buffer is full or almost full */
-				input_buf = xrealloc(input_buf, input_buf_len * 2);
+				input_buf_len *= 2;
+				input_buf = xrealloc(input_buf, input_buf_len);
 			}
 		}
 
@@ -954,25 +941,25 @@ int main(int argc, char **argv)
 				mysh_error("unexpected end of input");
 				mysh_last_exit_status = -1;
 			}
-			break;
+			goto out_break_read_loop;
 		} else if (bytes_read < 0) {
 			/* Read error */
 			if (errno == EINTR)
 				goto read_again;
 			mysh_error_with_errno("error reading input");
 			mysh_last_exit_status = -1;
-			break;
+			goto out_break_read_loop;
 		} else {
 			/* Successful read */
 
 			input_data_end += bytes_read;
-			mysh_assert(input_data_end <= input_buf_len);
 			bytes_remaining = input_data_end - input_data_begin;
 
 			/* Execute as many commands as possible */
 			ret = execute_shell_input(&cur_tok_list,
 						  &input_buf[input_data_begin],
 						  &bytes_remaining);
+			input_data_begin = input_data_end - bytes_remaining;
 			switch (ret) {
 			case LEX_ERROR:
 				mysh_last_exit_status = -1;
@@ -981,9 +968,9 @@ int main(int argc, char **argv)
 				goto read_again_check_buffer;
 			default:
 				mysh_last_exit_status = ret;
-				input_data_begin = input_data_end - bytes_remaining;
 				if (mysh_last_exit_status != 0 && mysh_exit_on_error)
 					goto out_break_read_loop;
+				break;
 			}
 		}
 	}

@@ -190,20 +190,7 @@ void destroy_param_map()
 	memset(&param_trie_root, 0, sizeof(param_trie_root));
 }
 
-#define SHELL_PARAM_ALPHA_CHAR      0x1
-#define SHELL_PARAM_NUMERIC_CHAR    0x2
-#define SHELL_PARAM_UNDERSCORE_CHAR 0x4
-#define SHELL_PARAM_SPECIAL_CHAR    0x8
-#define SHELL_PARAM_BEGIN_BRACE     0x10
-#define SHELL_PARAM_END_BRACE       0x20
-
-#define SHELL_NORMAL_PARAM_FIRST_CHAR \
-	(SHELL_PARAM_ALPHA_CHAR | SHELL_PARAM_UNDERSCORE_CHAR)
-
-#define SHELL_NORMAL_PARAM_CHAR \
-	(SHELL_NORMAL_PARAM_FIRST_CHAR | SHELL_PARAM_NUMERIC_CHAR)
-
-static const unsigned char shell_param_char_tab[256] = {
+const unsigned char _shell_char_tab[256] = {
 	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
 	['a' ... 'z'] = SHELL_PARAM_ALPHA_CHAR,
 	['0' ... '9'] = SHELL_PARAM_NUMERIC_CHAR,
@@ -213,25 +200,26 @@ static const unsigned char shell_param_char_tab[256] = {
 	['#']         = SHELL_PARAM_SPECIAL_CHAR,
 	['?']         = SHELL_PARAM_SPECIAL_CHAR,
 	/*['-']         = SHELL_PARAM_SPECIAL_CHAR,*/
-	['$']         = SHELL_PARAM_SPECIAL_CHAR,
+	['$']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_DOUBLE_QUOTE_SPECIAL,
+	['\\']        = SHELL_DOUBLE_QUOTE_SPECIAL,
+	['"']         = SHELL_DOUBLE_QUOTE_SPECIAL,
 	/*['!']         = SHELL_PARAM_SPECIAL_CHAR,*/
 	['{']         = SHELL_PARAM_BEGIN_BRACE,
 	['}']         = SHELL_PARAM_END_BRACE,
+	[' ']         = SHELL_LEX_WHITESPACE,
+	['\0']        = SHELL_LEX_WHITESPACE,
+	['\t']        = SHELL_LEX_WHITESPACE,
+	['\f']        = SHELL_LEX_WHITESPACE,
+	['\v']        = SHELL_LEX_WHITESPACE,
 };
-
-static int
-shell_param_char_type(char c)
-{
-	return shell_param_char_tab[(unsigned char)c];
-}
 
 bool string_matches_param_assignment(const struct string *s)
 {
 	size_t i;
-	if (!(shell_param_char_type(s->chars[0]) & SHELL_NORMAL_PARAM_FIRST_CHAR))
+	if (!(shell_char_type(s->chars[0]) & SHELL_NORMAL_PARAM_FIRST_CHAR))
 		return false;
 	for (i = 1; i < s->len; i++)
-		if (!(shell_param_char_type(s->chars[i]) & SHELL_NORMAL_PARAM_CHAR))
+		if (!(shell_char_type(s->chars[i]) & SHELL_NORMAL_PARAM_CHAR))
 			return (s->chars[i] == '=');
 	return false;
 }
@@ -291,7 +279,7 @@ const char *
 lookup_param(const char *name, size_t len)
 {
 	static char buf[20];
-	unsigned char char_type = shell_param_char_type(*name);
+	unsigned char char_type = shell_char_type(*name);
 	if (char_type & SHELL_PARAM_NUMERIC_CHAR) {
 		/* Positional parameter */
 		unsigned n = 0;
@@ -355,7 +343,9 @@ static int node_print_variable(struct param_trie_node *node)
 	ret = printf("%s='%s'\n", name, node->value);
 	if (ret >= 0)
 		ret = 0;
-	return 0;
+	else
+		mysh_error_with_errno("set: write error");
+	return ret;
 }
 
 static int do_print_all_shell_variables(struct param_trie_node *node)
@@ -468,7 +458,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 		var_end = var_begin;
 		if (*var_end == '{')
 			var_end++;
-		char_type = shell_param_char_type(*var_end);
+		char_type = shell_char_type(*var_end);
 		if (char_type & (SHELL_NORMAL_PARAM_CHAR |
 				 SHELL_PARAM_SPECIAL_CHAR))
 		{
@@ -484,7 +474,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 			}
 			do {
 				var_end++;
-			} while (shell_param_char_type(*var_end) & mask);
+			} while (shell_char_type(*var_end) & mask);
 			if (*var_end == '}') {
 				if (*var_begin == '{') {
 					var_begin++;

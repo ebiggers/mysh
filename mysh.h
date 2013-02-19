@@ -22,7 +22,7 @@ enum token_type {
 	TOK_END_OF_SHELL_STATEMENT = 0x80,
 };
 
-enum {
+enum lex_status {
 	LEX_SUCCESS          = 0,
 	LEX_ERROR            = -1000, /* don't conflict with exit statuses */
 	LEX_NOT_ENOUGH_INPUT = -2000, /* don't conflict with exit statuses */
@@ -72,7 +72,7 @@ struct string {
 	struct list_head list;
 };
 
-enum {
+enum string_flags {
 	STRING_FLAG_UNQUOTED             = 0x1,
 	STRING_FLAG_DOUBLE_QUOTED        = 0x2,
 	STRING_FLAG_SINGLE_QUOTED        = 0x4,
@@ -120,6 +120,31 @@ extern int print_all_shell_variables();
 extern char *all_positional_params;
 extern char **positional_parameters;
 extern unsigned int num_positional_parameters;
+
+enum shell_char_type_flags {
+	SHELL_PARAM_ALPHA_CHAR      = 0x1,
+	SHELL_PARAM_NUMERIC_CHAR    = 0x2,
+	SHELL_PARAM_UNDERSCORE_CHAR = 0x4,
+	SHELL_PARAM_SPECIAL_CHAR    = 0x8,
+	SHELL_PARAM_BEGIN_BRACE     = 0x10,
+	SHELL_PARAM_END_BRACE       = 0x20,
+	SHELL_LEX_WHITESPACE        = 0x40,
+	SHELL_DOUBLE_QUOTE_SPECIAL  = 0x80,
+};
+
+#define SHELL_NORMAL_PARAM_FIRST_CHAR \
+	(SHELL_PARAM_ALPHA_CHAR | SHELL_PARAM_UNDERSCORE_CHAR)
+
+#define SHELL_NORMAL_PARAM_CHAR \
+	(SHELL_NORMAL_PARAM_FIRST_CHAR | SHELL_PARAM_NUMERIC_CHAR)
+
+extern const unsigned char _shell_char_tab[256];
+static inline int
+shell_char_type(char c)
+{
+	return (int)_shell_char_tab[(unsigned char)c];
+}
+
 
 /* mysh_parse.c */
 extern void free_tok_list(struct list_head *tok_list);
