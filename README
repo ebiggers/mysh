@@ -1,0 +1,277 @@
+mysh (name pending) is a relatively simple shell that supports some features of
+a POSIX-compliant shell.
+
+Shell input
+===========
+
+The shell can take input in one of the following ways:
+
+- from standard input, which is done if the shell is executed with no non-option
+arguments, or is executed with the '-s' argument.  In the former case, the shell
+is considered interactive and will print a prompt before each line of input.
+- directly from the command line, which is done if the '-c' argument is passed.
+- from a shell script, which is done if the shell is executed with a non-option
+argument, which is interpreted as the same of a shell script to execute.
+
+Shell statements
+================
+
+The input takes the form of zero or more shell statements.  A shell statement is
+terminated by a semicolon ';', a newline '\n', or a pound sign '#', the last of
+which causes the rest of the line to be ignored as a comment.  A newline may be
+escaped with '\' if it occurs unquoted or inside double quotes, in which case
+the newline is ignored.
+
+Each shell statement is a pipeline which consists of zero or more pipeline
+components separated by the '|' character.  The pipeline may be followed by an
+optional '&' character, which indicates that the pipeline is to be executed
+asynchronously.  Each component of the pipeline consists of zero or more
+variable assignments, followed by one or more words that specify the command to
+execute and its arguments, followed by zero or more redirections.
+
+Example shell input showing some supported features:
+
+$ cat myfile.txt | grep "$pattern" | wc -l > wc.out 2> wc.err; echo 555 &; echo a\
+string\
+containing\
+newlines > outfile; NEWVAR=value env
+
+Shell variables and parameter expansion
+=======================================
+
+Shell variables can be set using variable assigments of the form
+
+$ VAR=VALUE
+
+If a shell statement consists only of variable assignments, the variables are
+set in the currently executing shell, but not yet exported into the environment
+unless done so using the 'export' builtin.  If the variable assignments occur
+preceding an external command to be executed, the variable assignments are made
+only in the environment of the child process for the external command.
+
+Shell variables can be unset using the 'unset' builtin:
+
+$ unset VAR
+
+When the shell is started, the environment is loaded into shell variables.
+Also, the positional parameters ($0, $1, $2, ...) are set based on any
+arguments given to the shell on the command line.  All other variables are
+initially unset.  The positional parameters can also be changed by the 'shift'
+builtin (to make $1 become $2, $2 become $3, etc.) or by the 'set' builtin (to
+provide a new set of positional parameters).
+
+Parameter expansion is done, so shell variables can be used in shell statements.
+Parameter expansion takes the form of $VAR or ${VAR}, and it is done in unquoted
+and double-quoted strings, but not single-quoted strings.  A few special
+parameters are supported:
+
+  $0, $1, ..., etc.  Positional parameters
+  $#                 Number of positional parameters
+  $*, $@             All positional parameters, space-separated
+  $$                 Current process ID
+  $?                 Exit status of last executed command
+
+Note: $@ currently does not behave correctly when used in a double-quoted string
+(compared to a POSIX-compliant shell).  Also, the $IFS variable is not
+supported.
+
+Some other parameter expansions required by a POSIX-compliant shell are not
+recognized; for example, ${VAR:-DEFVAL} is not recognized and will just not be
+expanded at all.
+
+Word splitting and gluing
+=========================
+
+If you do something like:
+
+$ a="1 2"
+$ echo $a
+
+$a will expand to two strings and this occurs outside of double quotes, so
+'echo' will be passed two separate arguments "1" and "2".  This is word
+splitting.
+
+If you do something like:
+$ echo "1"'2'
+
+The strings "1" and '2' will be joined into the string "12", so 'echo' will be
+passed one argument "12".  This is word gluing (there may be another name for
+this...).
+
+Filename expansion
+==================
+
+Unquoted strings passed to the shell are subject to filename expansion using the
+glob() function, where the '*' character expands to any characters other than
+'/', the '?' character expands to exactly one unspecified character, and
+[[!]abc] expands to exactly one of the characters a, b, or c (without '!') or
+exactly one character other than a, b, and c (with '!').
+
+globs that do not expand to any files are left unchanged.  glob special
+characters can otherwise be escaped with the backslash character or put in
+quotes.
+
+Filename expansion occurs after parameter expansion, word splitting, and word
+gluing.
+
+Tilde expansion
+===============
+
+Tilde expansion (where ~ is replaced with $HOME, and ~USER is replaced with the
+home directory of USER) is partially supported by making the glob() function do
+it at the same time as filename expansion.  However, it will not work correctly
+if the named file does not exist, as that apparently causes glob() to return the
+glob literally without performing tilde expansion.
+
+Redirections
+============
+
+A number of redirection operators are supported:
+
+- Redirect file descriptor N (defaults to standard output) to a file:
+	[N]>FILENAME
+
+- Redirect file descriptor N (defaults to standard output) to a file, but start
+  writing at the end of the file rather than overwriting it:
+	[N]>>FILENAME
+
+- Redirect both standard output and standard error to a file:
+	&>FILENAME
+
+- Append both standard output and standard error to a file:
+	&>>FILENAME
+
+- Make file descriptor N, which defaults to standard output, be a copy of file
+  descriptor M:
+	[N]>&M
+
+- Redirect a file to an input file descriptor, defaulting to standard input:
+	[N]<FILENAME
+
+- Make file descriptor N, which defaults to standard input, be a copy of file
+  descriptor M:
+	[N]<&M
+
+Redirections are made only for the preceding command, unless the 'exec' builtin
+is used with no arguments, in which case any redirections take place in the
+currently executing shell:
+
+    $ exec &> file  # append stdout and stderr to a file for the remainder of the script
+
+Redirections currently have the following limitations:
+
+- Redirections must be listed after any command arguments.  So,
+
+    $ echo > file 1
+
+  must be written as:
+    
+    $ echo 1 > file
+
+- Here documents are here strings are not supported.
+
+- The special-case of >& with no specified file descriptors to mean &> is not
+  supported.
+
+- The >| 'noclobber' redirection is not supported.
+
+- Opening file descriptors (with <>) and closing file descriptors (with >&-) is
+  not supported.
+
+Control statements
+==================
+
+Control statements such as 'if', 'for', and 'case' are not supported.
+
+Functions and aliases
+=====================
+
+Shell functions and aliases are not supported.
+
+Command expansion
+=================
+
+Command expansion with `COMMAND` or $(COMMAND) is not supported.
+
+Arithmetic expansion
+====================
+
+Arithmetic expansion with $(( EXPR )) is not supported.
+
+Subshells and command grouping
+==============================
+
+Subshells with ( INPUT ) and command grouping with { INPUT } are not supported.
+
+Shell options
+=============
+
+The 'set' builtin allows the options 'f', 'e', 'n', and 'v' to be set (with
+-OPT) and unset (with +OPT).  Other POSIX-required options are not supported,
+and the options cannot be set directly from the command line.  You also
+cannot use 'set -o OPTION' to set an option by name.  The descriptions of
+the options are:
+
+  -e:  Exit the shell when a command exits with failure status.
+  -f:  Disable filename expansion.
+  -n:  Parse, but do not execute, the input.
+  -v:  Print input as it's executed.
+
+Builtins
+========
+
+Some builtins have been described already.  The full list of builtins is:
+
+:
+cd [DIR]
+eval [arg ...]
+exec [command [arguments ...]]
+exit [STATUS]
+export VARIABLE[=VALUE] ...
+getenv [VARIABLE]
+help [COMMAND]
+pwd
+set [[-+]fev] [--] [arg ...]
+setenv VARIABLE [VALUE]
+shift [N]
+unset [name ...]
+
+Limitation: the output from a builtin currently cannot be piped into another
+command.  ('echo' works only because it hasn't been implemented as a builtin).
+
+Command line editing
+====================
+
+There are no features to make command line editing easier.
+
+Job control
+===========
+
+Job control is not supported.
+
+Asynchronous commands
+=====================
+
+Follow a pipeline with the '&' character to execute it in the background.  There
+is no way to wait for an asynchronous command to finish, or to retrieve its exit
+status.
+
+Command prompt
+==============
+
+The command prompt is hardcoded as the absolute path to the working directory,
+followed by a space and the '$' character.
+
+Startup files
+=============
+
+The shell will not automatically execute commands from files like /etc/profile
+when it starts up.
+
+Exit status
+===========
+
+The exit status of the shell is the exit status of the last command executed, 1
+if the system ran out of memory, -1 if there was a parse error, or 2 if the
+shell could not understand its command line options, or 0 if the input to the
+shell was empty or consisted only of whitespace and comments.

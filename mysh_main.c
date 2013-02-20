@@ -1,39 +1,7 @@
 /*
  * mysh_main.c
  *
- * A simple shell program.
- *
- * This shell can execute commands in the following ways:
- *   - with no command line arguments to the shell, in which cases commands are
- *   read from standard input
- *   - with the name of a file as a command line argument, in which case
- *   commands are read from the file
- *   - a single command passed as the argument to the '-c' option.
- *
- * Features include:
- *   - Each line of input is parsed as one or more sets of strings, with each
- *   set of strings separated by the '|' character, to form a pipeline.  An
- *   optional '&' character at the end of the line indicates that the pipeline
- *   is to be executed in the backgroud.  Each set of strings is interpreted as
- *   a program to execute with one or more command line arguments.  It may be
- *   followed by one or both of the special characters '<' and '>' followed by
- *   another string, which perform redirection of standard input and standard
- *   output to a file.
- *   - Strings may be unquoted, single-quoted, or double-quoted.  '\' is an
- *   escape character that escapes single quotes in single-quoted strings,
- *   double quotes in double-quoted strings, backslashes in all types of
- *   strings, and '&', '|', '>', '<', '"', '\'', ' ', and '\t' in unquoted
- *   strings.
- *   - Comments are supported (begin with '#' character)
- *
- * Limitations:
- *   - Control statements such as 'if', 'for', and 'case' are not supported.
- *   - Functions are not supported.
- *   - Command substitution is not supported.
- *   - Arithmetic expansion is not supported.
- *   - Startup files are not supported.
- *   - Job control is not supported (other than the ability to start a pipeline
- *     in the backgroup)
+ * main loop for the shell.
  */
 
 #include "mysh.h"
