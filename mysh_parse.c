@@ -546,6 +546,8 @@ static int parse_next_redirection(struct list_head *toks,
 	int ret = 0;
 
 	tok = next_token(toks);
+	if (tok->preceded_by_whitespace)
+		prev_string = NULL;
 	tok2 = tok3 = tok4 = NULL;
 	switch (tok->type) {
 	case TOK_GREATER_THAN:
