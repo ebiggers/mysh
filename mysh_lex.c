@@ -207,11 +207,11 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 		--bytes_remaining;
 		break;
 	case '<':
-		type = TOK_GREATER_THAN;
+		type = TOK_LESS_THAN;
 		--bytes_remaining;
 		break;
 	case '>':
-		type = TOK_LESS_THAN;
+		type = TOK_GREATER_THAN;
 		--bytes_remaining;
 		break;
 	case '#': /* everything after '#' character is a comment */

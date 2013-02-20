@@ -45,23 +45,16 @@ struct token {
 };
 
 
-enum redirection_type {
-	REDIR_TYPE_FD_TO_FD,
-	REDIR_TYPE_FILE_TO_FD,
-	REDIR_TYPE_FD_TO_FILE_OVERWRITE,
-	REDIR_TYPE_FD_TO_FILE_APPEND,
-};
-
 struct redirection {
-	enum redirection_type type;
+	bool is_file;
 	union {
-		int from_fd;
-		const char *from_filename;
+		int src_fd;
+		struct {
+			const char *src_filename;
+			int open_flags;
+		};
 	};
-	union {
-		int to_fd;
-		const char *to_filename;
-	};
+	int dest_fd;
 	struct list_head list;
 };
 
@@ -73,15 +66,17 @@ struct string {
 };
 
 enum string_flags {
-	STRING_FLAG_UNQUOTED             = 0x1,
-	STRING_FLAG_DOUBLE_QUOTED        = 0x2,
-	STRING_FLAG_SINGLE_QUOTED        = 0x4,
-	STRING_FLAG_PARAM_EXPANDED       = 0x8,
-	STRING_FLAG_PRECEDING_WHITESPACE = 0x10,
-	STRING_FLAG_WORD_SPLIT           = 0x20,
-	STRING_FLAG_FILENAME_EXPANDED    = 0x40,
-	STRING_FLAG_WAS_PARAM            = 0x80,
-	STRING_FLAG_VAR_ASSIGNMENT       = 0x100,
+	STRING_FLAG_UNQUOTED                = 0x1,
+	STRING_FLAG_DOUBLE_QUOTED           = 0x2,
+	STRING_FLAG_SINGLE_QUOTED           = 0x4,
+	STRING_FLAG_PARAM_EXPANDED          = 0x8,
+	STRING_FLAG_PRECEDING_WHITESPACE    = 0x10,
+	STRING_FLAG_WORD_SPLIT              = 0x20,
+	STRING_FLAG_FILENAME_EXPANDED       = 0x40,
+	STRING_FLAG_FILENAME_EXPANDED_MULTI = 0x80,
+	STRING_FLAG_WAS_PARAM               = 0x100,
+	STRING_FLAG_VAR_ASSIGNMENT          = 0x200,
+	STRING_FLAG_IN_REDIRECTIONS         = 0x400,
 };
 
 /* mysh_builtin.c */
@@ -154,7 +149,6 @@ shell_char_type(char c)
 
 /* mysh_parse.c */
 extern int parse_tok_list(struct list_head *toks,
-			  const bool is_last,
 			  bool *async_ret,
 			  struct list_head *cmd_args,
 			  struct list_head *var_assignments,

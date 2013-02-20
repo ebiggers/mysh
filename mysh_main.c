@@ -176,8 +176,7 @@ static int execute_pipeline(struct list_head command_tokens[],
 	i = 0;
 	do {
 		ret = parse_tok_list(&command_tokens[i],
-				     (i == ncommands - 1),
-				     &async,
+				     (i == ncommands - 1) ? &async : NULL,
 				     &cmd_arg_lists[i],
 				     &var_assignment_lists[i],
 				     &redir_lists[i],
