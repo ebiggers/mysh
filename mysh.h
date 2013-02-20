@@ -73,7 +73,6 @@ enum string_flags {
 	STRING_FLAG_PRECEDING_WHITESPACE    = 0x10,
 	STRING_FLAG_WORD_SPLIT              = 0x20,
 	STRING_FLAG_FILENAME_EXPANDED       = 0x40,
-	STRING_FLAG_FILENAME_EXPANDED_MULTI = 0x80,
 	STRING_FLAG_WAS_PARAM               = 0x100,
 	STRING_FLAG_VAR_ASSIGNMENT          = 0x200,
 	STRING_FLAG_IN_REDIRECTIONS         = 0x400,
@@ -88,6 +87,7 @@ extern bool maybe_execute_builtin(const struct list_head *command_toks,
 
 /* mysh_lex.c */
 extern void free_tok_list(struct list_head *tok_list);
+extern void free_token(struct token *tok);
 extern int lex_next_token(const char *p, size_t *bytes_remaining_p,
 			  struct token **tok_ret);
 
@@ -177,6 +177,7 @@ extern struct string *new_string(size_t len);
 extern struct string *new_string_with_data(const char *chars, size_t len);
 extern void free_string(struct string *s);
 extern void free_string_list(struct list_head *string_list);
+extern void clear_string(struct string *s);
 
 
 #endif /* _MYSH_H */

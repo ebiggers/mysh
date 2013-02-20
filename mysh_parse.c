@@ -154,10 +154,9 @@ string_do_filename_expansion(struct string *s, struct list_head *out_list)
 		 * Free the original string, and add the new strings to
 		 * @out_list. */
  		flags = s->flags;
+		if (glob_buf.gl_pathc > 1 || strcmp(glob_buf.gl_pathv[0], s->chars) != 0)
+			flags |= STRING_FLAG_FILENAME_EXPANDED;
 		free_string(s);
-		flags |= STRING_FLAG_FILENAME_EXPANDED;
-		if (glob_buf.gl_pathc > 1)
-			flags |= STRING_FLAG_FILENAME_EXPANDED_MULTI;
 		for (i = 0; i < glob_buf.gl_pathc; i++) {
 			s2 = new_string_with_data(glob_buf.gl_pathv[i],
 						  strlen(glob_buf.gl_pathv[i]));
@@ -190,7 +189,7 @@ static int do_filename_expansion(struct list_head *string_list)
 
 /* Do parameter expansion and word splitting.  */
 static int expand_params_and_word_split(struct token *tok,
-					bool have_next_token,
+					struct token *next,
 					struct list_head *out_list)
 {
 	struct string *s;
@@ -234,8 +233,8 @@ static int expand_params_and_word_split(struct token *tok,
 		/* If there was trailing whitespace as a result of word
 		 * splitting, force @preceded_by_whitespace to true on the next
 		 * token (if there is one) */
-		if (have_next_token && trailing_whitespace)
-			list_entry(tok->list.next, struct token, list)->preceded_by_whitespace = true;
+		if (next && trailing_whitespace)
+			next->preceded_by_whitespace = true;
 	} else {
 		list_add_tail(&s->list, out_list);
 		leading_whitespace = false;
@@ -330,27 +329,24 @@ static void transfer_var_assignments(struct list_head *string_list,
 	}
 }
 
-static inline struct token *next_token(struct list_head *toks)
+static struct token *next_token_nodel(struct list_head *toks)
 {
 	struct token *tok;
 
-	if (list_empty(toks)) {
+	if (list_empty(toks))
 		tok = NULL;
-	} else {
+	else
 		tok = list_entry(toks->next, struct token, list);
-		list_del(&tok->list);
-	}
 	return tok;
 }
 
-static void free_token(struct token *tok)
+static struct token *next_token(struct list_head *toks)
 {
-	if (tok) {
-		free(tok->tok_data);
-		free(tok);
-	}
+	struct token *tok = next_token_nodel(toks);
+	if (tok)
+		list_del(&tok->list);
+	return tok;
 }
-
 
 struct redir_spec {
 	unsigned requires_right_string_is_fd : 1;
@@ -442,69 +438,72 @@ static const struct redir_spec redir_specs[] = {
 	},
 };
 
-static int expand_string(struct token *tok, bool have_next_token,
-			 struct list_head *out_list)
+static int expand_single_string(struct token *tok, struct token *next,
+				struct string **string_ret)
 {
 	int ret;
-
-	INIT_LIST_HEAD(out_list);
-	ret = expand_params_and_word_split(tok, false, out_list);
+	LIST_HEAD(string_list);
+	ret = expand_params_and_word_split(tok, next, &string_list);
 	if (ret)
 		goto out_free_string_list;
-	ret = glue_strings(out_list);
+	ret = glue_strings(&string_list);
 	if (ret)
 		goto out_free_string_list;
 	if (!mysh_filename_expansion_disabled) {
-		ret = do_filename_expansion(out_list);
+		ret = do_filename_expansion(&string_list);
 		if (ret)
 			goto out_free_string_list;
+	}
+	if (list_empty(&string_list))
+		*string_ret = NULL;
+	else if (list_is_singular(&string_list))
+		*string_ret = list_entry(string_list.next, struct string, list);
+	else {
+		ret = -1;
+		goto out_free_string_list;
 	}
 out:
 	return ret;
 out_free_string_list:
-	free_string_list(out_list);
+	free_string_list(&string_list);
 	goto out;
 }
 
 static int add_redirection(const struct redir_spec *spec,
 			   struct string *left_adjacent_string,
-			   struct token *next, struct list_head *redirs)
+			   struct token *next,
+			   struct token *next_next,
+			   struct list_head *redirs)
 {
 	struct redirection *redir = xmalloc(sizeof(struct redirection));
 	int ret;
-	struct list_head string_list;
 	struct string *right_string;
 
 	redir->dest_fd = spec->default_left_fd;
 	if (left_adjacent_string &&
-	    !(left_adjacent_string->flags & (STRING_FLAG_WORD_SPLIT |
-					    STRING_FLAG_FILENAME_EXPANDED_MULTI |
-					    STRING_FLAG_PARAM_EXPANDED)))
+	    !(left_adjacent_string->flags & (STRING_FLAG_FILENAME_EXPANDED |
+					     STRING_FLAG_PARAM_EXPANDED)))
 	{
 		char *tmp;
 		int left_fd = strtol(left_adjacent_string->chars, &tmp, 10);
-		if (left_fd >= 0 && tmp != left_adjacent_string->chars && !*tmp)
+		if (left_fd >= 0 && tmp != left_adjacent_string->chars && !*tmp) {
 			redir->dest_fd = left_fd;
+			clear_string(left_adjacent_string);
+		}
 	}
 
 	if (!next ||
 	    (!spec->accepts_whitespace_before_right_string &&
-	     next->preceded_by_whitespace))
+	     next->preceded_by_whitespace)
+	    || (ret = expand_single_string(next, next_next, &right_string)) || !right_string)
 	{
-		mysh_error("expected %s after redirection operator",
-			   spec->requires_right_string_is_fd ? "file descriptor" : "filename");
-		ret = -1;
-		goto out;
-	}
-	ret = expand_string(next, false, &string_list);
-	if (!list_is_singular(&string_list)) {
 		mysh_error("expected single %s after redirection operator",
 			   spec->requires_right_string_is_fd ? "file descriptor" : "filename");
-		ret = -1;
-		goto out_free_string_list;
+		if (ret == 0)
+			ret = -1;
+		goto out;
 	}
 
-	right_string = list_entry(string_list.next, struct string, list);
 	if (spec->requires_right_string_is_fd) {
 		char *tmp;
 		int right_fd = strtol(right_string->chars, &tmp, 10);
@@ -512,12 +511,13 @@ static int add_redirection(const struct redir_spec *spec,
 			redir->src_fd = right_fd;
 		redir->is_file = false;
 	} else {
-		redir->src_filename = xstrdup(right_string->chars); // XXX
+		redir->src_filename = right_string->chars; // XXX
+		right_string->chars = NULL;
+		right_string->len = 0;
 		redir->open_flags = spec->open_flags;
 		redir->is_file = true;
 	}
-out_free_string_list:
-	free_string_list(&string_list);
+	free_string(right_string);
 out:
 	if (ret == 0)
 		list_add_tail(&redir->list, redirs);
@@ -526,10 +526,20 @@ out:
 	return ret;
 }
 
+static void add_stderr_to_stdout_redirection(struct list_head *redirs)
+{
+	struct redirection *redir;
+
+	redir = xmalloc(sizeof(*redir));
+	redir->is_file = false;
+	redir->src_fd = 1;
+	redir->dest_fd = 2;
+	list_add_tail(&redir->list, redirs);
+}
+
 static int parse_next_redirection(struct list_head *toks,
 				  struct string *prev_string,
 				  struct list_head *redirs,
-				  bool is_last_pipeline_component,
 				  bool *async_ret)
 {
 	struct token *tok, *tok2, *tok3, *tok4;
@@ -548,13 +558,17 @@ static int parse_next_redirection(struct list_head *toks,
 			if (tok3 && tok3->type & TOK_CLASS_STRING) {
 				/* [N]>>WORD (output redirection, append) */
 				ret = add_redirection(&redir_specs[APPEND_OUTPUT_NUM],
-						      prev_string, tok3, redirs);
+						      prev_string, tok3,
+						      next_token_nodel(toks),
+						      redirs);
 				break;
 			}
 		} else if (tok2->type & TOK_CLASS_STRING) {
 			/* [N]>WORD  (output redirection) */
 			ret = add_redirection(&redir_specs[REDIRECT_OUTPUT_NUM],
-					      prev_string, tok2, redirs);
+					      prev_string, tok2,
+					      next_token_nodel(toks),
+					      redirs);
 			break;
 		} else if (tok2->type & TOK_AMPERSAND &&
 			   !tok2->preceded_by_whitespace)
@@ -563,7 +577,9 @@ static int parse_next_redirection(struct list_head *toks,
 			tok3 = next_token(toks);
 			if (tok3 && tok3->type & TOK_CLASS_STRING) {
 				ret = add_redirection(&redir_specs[DUP_OUTPUT_FD_NUM],
-						      prev_string, tok3, redirs);
+						      prev_string, tok3,
+						      next_token_nodel(toks),
+						      redirs);
 				break;
 			}
 		}
@@ -576,7 +592,9 @@ static int parse_next_redirection(struct list_head *toks,
 		if (tok2->type & TOK_CLASS_STRING) {
 			/* [N]<WORD */
 			ret = add_redirection(&redir_specs[REDIRECT_INPUT_NUM],
-					      prev_string, tok2, redirs);
+					      prev_string, tok2,
+					      next_token_nodel(toks),
+					      redirs);
 			break;
 		} else if (tok2->type & TOK_LESS_THAN && !tok2->preceded_by_whitespace) {
 			/* << */
@@ -591,23 +609,25 @@ static int parse_next_redirection(struct list_head *toks,
 					goto out_error;
 				}
 			} else if (tok3->type & TOK_CLASS_STRING) {
-				/* <<WORD (here document */
+				/* <<WORD (here document) */
 				mysh_error("here documents not implemented");
 				goto out_error;
 			}
 		} else if (tok2->type & TOK_AMPERSAND && !tok2->preceded_by_whitespace) {
 			tok3 = next_token(toks);
-			/* [N]<&WORD  (duplicate input file descriptor */
+			/* [N]<&WORD  (duplicate input file descriptor) */
 			if (tok3 && tok3->type & TOK_CLASS_STRING) {
 				ret = add_redirection(&redir_specs[DUP_INPUT_FD_NUM],
-						      prev_string, tok2, redirs);
+						      prev_string, tok2,
+						      next_token_nodel(toks),
+						      redirs);
 				break;
 			}
 		}
 		goto out_syntax_error;
 	case TOK_AMPERSAND:
 		tok2 = next_token(toks);
-		if (!tok2 && is_last_pipeline_component) {
+		if (!tok2 && async_ret) {
 			/* & */
 			*async_ret = true;
 			break;
@@ -618,38 +638,28 @@ static int parse_next_redirection(struct list_head *toks,
 				goto out_syntax_error;
 			if (tok3->type & TOK_CLASS_STRING) {
 				/* &>WORD */
-
 				/* Rewrite as
 				 * >WORD 2>&1 */
-				struct redirection *redir;
 				ret = add_redirection(&redir_specs[REDIRECT_OUTPUT_NUM],
-						      NULL, tok3, redirs);
+						      NULL, tok3,
+						      next_token_nodel(toks), redirs);
 				if (ret)
 					break;
-				redir = xmalloc(sizeof(*redir));
-				redir->is_file = false;
-				redir->src_fd = 1;
-				redir->dest_fd = 2;
-				list_add_tail(&redir->list, redirs);
+				add_stderr_to_stdout_redirection(redirs);
 				break;
 			} else if (tok3->type & TOK_GREATER_THAN) {
 				/* &>> */
-
 				tok4 = next_token(toks);
 				if (tok4 && tok4->type & TOK_CLASS_STRING) {
 					/* &>>WORD */
 					/* Rewrite as
 					 * >>WORD 2>&1 */
-					struct redirection *redir;
 					ret = add_redirection(&redir_specs[APPEND_OUTPUT_NUM],
-							      NULL, tok4, redirs);
+							      NULL, tok4,
+							      next_token_nodel(toks), redirs);
 					if (ret)
 						break;
-					redir = xmalloc(sizeof(*redir));
-					redir->is_file = false;
-					redir->src_fd = 1;
-					redir->dest_fd = 2;
-					list_add_tail(&redir->list, redirs);
+					add_stderr_to_stdout_redirection(redirs);
 					break;
 				}
 
@@ -672,16 +682,6 @@ out_syntax_error:
 	goto out_error;
 }
 
-#if 0
-enum REDIR_PARSE_STATUS {
-	REDIR_PARSE_STATUS_CONSUMED_PREV_STRING = 0x100,
-	REDIR_PARSE_STATUS_FOUND_ASYNC = 0x200,
-};
-
-#define REDIR_PARSE_STATUS_MASK (REDIR_PARSE_STATUS_CONSUMED_PREV_STRING | \
-				 REDIR_PARSE_STATUS_FOUND_ASYNC)
-#endif
-
 static int parse_redirections(struct list_head *toks,
 			      struct list_head *cmd_args,
 			      struct list_head *redirs,
@@ -690,24 +690,64 @@ static int parse_redirections(struct list_head *toks,
 	struct string *prev_string;
 	int ret = 0;
 
+	/* Set prev_string by following a string from the cmd_args list. */
+	bool prev_string_is_borrowed = true;
 	if (!list_empty(cmd_args))
 		prev_string = list_entry(cmd_args->prev, struct string, list);
 	else
 		prev_string = NULL;
 
+	/* While there are additional tokens remaining, try parsing the next
+	 * redirection. */
 	while (!list_empty(toks)) {
 		ret = parse_next_redirection(toks, prev_string, redirs,
 					     async_ret);
-#if 0
-		if (ret & REDIR_PARSE_STATUS_FOUND_ASYNC) {
-			*async_ret = true;
-		ret &= ~REDIR_PARSE_STATUS_MASK;
-#endif
-		if (ret)
+		if (ret) /* Parse error */
 			break;
-		if (!list_empty(toks)) {
+
+		if (prev_string) {
+			char *chars = prev_string->chars;
+
+			/* Redirection consumed borrowed string.  Delete it from
+			 * the cmd_args list. */
+			if (chars == NULL && prev_string_is_borrowed)
+				list_del(&prev_string->list);
+
+			/* If the redirection consumed the previous string, or
+			 * it was not borrowed,free it */
+			if (chars == NULL || !prev_string_is_borrowed)
+				free_string(prev_string);
+
+			/* If the previous string was not borrowed and it was
+			 * not consumed by the redirection, it's a syntax error. */
+			if (chars != NULL && !prev_string_is_borrowed) {
+				mysh_error("unexpected string token");
+				return -1;
+			}
+			prev_string = NULL;
+		}
+
+		/* If the next token is a string, try to set prev_string from
+		 * it. */
+		while (!list_empty(toks)) { /* while loop to take into account
+					       strings that expand to nothing */
 			struct token *tok = list_entry(toks->next, struct token, list);
 			if (tok->type & TOK_CLASS_STRING) {
+				struct token *next;
+				if (tok->list.next == toks)
+					next = NULL;
+				else
+					next = list_entry(tok->list.next, struct token, list);
+				ret = expand_single_string(tok, next, &prev_string);
+				if (ret)
+					return ret;
+				list_del(&tok->list);
+				if (prev_string) {
+					prev_string_is_borrowed = false;
+					break;
+				}
+			} else {
+				break;
 			}
 		}
 	}
@@ -727,7 +767,7 @@ int parse_tok_list(struct list_head *toks,
 		   unsigned *cmd_nargs_ret,
 		   unsigned *num_redirs_ret)
 {
-	struct token *tok, *tmp;
+	struct token *tok, *tmp, *next;
 	int ret;
 
 	mysh_assert(list_empty(var_assignments));
@@ -738,7 +778,11 @@ int parse_tok_list(struct list_head *toks,
 		if (!(tok->type & TOK_CLASS_STRING))
 			break;
 		LIST_HEAD(tmp_list);
-		ret = expand_params_and_word_split(tok, (tok->list.next != toks), &tmp_list);
+		if (tok->list.next == toks)
+			next = NULL;
+		else
+			next = list_entry(tok->list.next, struct token, list);
+		ret = expand_params_and_word_split(tok, next, &tmp_list);
 		if (ret)
 			goto out_free_string_list;
 		list_splice_tail(&tmp_list, &string_list);

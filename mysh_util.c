@@ -98,8 +98,18 @@ new_string_with_data(const char *chars, size_t len)
 void
 free_string(struct string *s)
 {
+	if (s) {
+		free(s->chars);
+		free(s);
+	}
+}
+
+void
+clear_string(struct string *s)
+{
 	free(s->chars);
-	free(s);
+	s->chars = NULL;
+	s->len = 0;
 }
 
 /* Frees a list of strings */

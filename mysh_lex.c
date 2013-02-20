@@ -11,13 +11,20 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+void free_token(struct token *tok)
+{
+	if (tok) {
+		free(tok->tok_data);
+		free(tok);
+	}
+}
+
 void free_tok_list(struct list_head *tok_list)
 {
 	struct token *tok, *tmp;
 	list_for_each_entry_safe(tok, tmp, tok_list, list) {
 		list_del(&tok->list);
-		free(tok->tok_data);
-		free(tok);
+		free_token(tok);
 	}
 }
 
