@@ -287,20 +287,30 @@ static int builtin_shift(unsigned argc, const char **argv)
 static int builtin_source(unsigned argc, const char **argv)
 {
 	int in_fd;
+	char **pos_params_save;
+	unsigned num_pos_params_save;
+	int ret;
 
 	if (argc == 0) {
 		mysh_error("source: requires filename");
 		return 2;
 	}
 
-	/* TODO: Save positional parameters to restore later */
-	set_positional_params(argc - 1, argv[0], argv + 1);
 	in_fd = open(argv[0], O_RDONLY);
 	if (in_fd < 0) {
 		mysh_error_with_errno("can't open %s", argv[0]);
 		return 1;
 	}
-	return read_loop(in_fd, false);
+
+	pos_params_save = positional_parameters;
+	num_pos_params_save = num_positional_parameters;
+	positional_parameters = NULL;
+	set_positional_params(argc - 1, argv[0], argv + 1);
+	ret = read_loop(in_fd, false);
+	destroy_positional_params();
+	positional_parameters = pos_params_save;
+	num_positional_parameters = num_pos_params_save;
+	return ret;
 }
 
 static int builtin_unset(unsigned argc, const char **argv)

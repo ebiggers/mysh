@@ -179,6 +179,7 @@ static void free_param_trie(struct param_trie_node *node)
 			free(node->children[i]);
 		}
 	}
+	memset(node, 0, sizeof(node));
 
 }
 
@@ -187,7 +188,6 @@ static void free_param_trie(struct param_trie_node *node)
 void destroy_param_map()
 {
 	free_param_trie(&param_trie_root);
-	memset(&param_trie_root, 0, sizeof(param_trie_root));
 }
 
 bool string_matches_param_assignment(const struct string *s)
