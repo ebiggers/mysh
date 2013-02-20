@@ -283,14 +283,10 @@ out_close_pipes:
 					ret = -1;
 				mysh_error_with_errno("Failed to wait for child with "
 						      "pid %d to terminate", child_pids[i]);
-			}
-			if (WIFEXITED(status)) {
-				if (ret == 0)
+			} else if (ret == 0) {
+				if (WIFEXITED(status))
 					ret = WEXITSTATUS(status);
-			} else {
-				mysh_error("Child process with pid %d was abnormally "
-					   "terminated", child_pids[i]);
-				if (ret == 0)
+				else
 					ret = -1;
 			}
 		} while (++i != ncommands);
