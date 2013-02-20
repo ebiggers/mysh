@@ -190,29 +190,6 @@ void destroy_param_map()
 	memset(&param_trie_root, 0, sizeof(param_trie_root));
 }
 
-const unsigned char _shell_char_tab[256] = {
-	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
-	['a' ... 'z'] = SHELL_PARAM_ALPHA_CHAR,
-	['0' ... '9'] = SHELL_PARAM_NUMERIC_CHAR,
-	['_']         = SHELL_PARAM_UNDERSCORE_CHAR,
-	['@']         = SHELL_PARAM_SPECIAL_CHAR,
-	['*']         = SHELL_PARAM_SPECIAL_CHAR,
-	['#']         = SHELL_PARAM_SPECIAL_CHAR,
-	['?']         = SHELL_PARAM_SPECIAL_CHAR,
-	/*['-']         = SHELL_PARAM_SPECIAL_CHAR,*/
-	['$']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_DOUBLE_QUOTE_SPECIAL,
-	['\\']        = SHELL_DOUBLE_QUOTE_SPECIAL,
-	['"']         = SHELL_DOUBLE_QUOTE_SPECIAL,
-	/*['!']         = SHELL_PARAM_SPECIAL_CHAR,*/
-	['{']         = SHELL_PARAM_BEGIN_BRACE,
-	['}']         = SHELL_PARAM_END_BRACE,
-	[' ']         = SHELL_LEX_WHITESPACE,
-	['\0']        = SHELL_LEX_WHITESPACE,
-	['\t']        = SHELL_LEX_WHITESPACE,
-	['\f']        = SHELL_LEX_WHITESPACE,
-	['\v']        = SHELL_LEX_WHITESPACE,
-};
-
 bool string_matches_param_assignment(const struct string *s)
 {
 	size_t i;

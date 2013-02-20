@@ -10,6 +10,36 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+const unsigned char _shell_char_tab[256] = {
+	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
+	['a' ... 'z'] = SHELL_PARAM_ALPHA_CHAR,
+	['0' ... '9'] = SHELL_PARAM_NUMERIC_CHAR,
+	['_']         = SHELL_PARAM_UNDERSCORE_CHAR,
+	['@']         = SHELL_PARAM_SPECIAL_CHAR,
+	['*']         = SHELL_PARAM_SPECIAL_CHAR,
+	['#']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_UNQUOTED_SPECIAL,
+	['?']         = SHELL_PARAM_SPECIAL_CHAR,
+	/*['-']         = SHELL_PARAM_SPECIAL_CHAR,*/
+	['$']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_DOUBLE_QUOTE_SPECIAL,
+	['\\']        = SHELL_DOUBLE_QUOTE_SPECIAL | SHELL_UNQUOTED_SPECIAL,
+	['"']         = SHELL_DOUBLE_QUOTE_SPECIAL | SHELL_UNQUOTED_SPECIAL,
+	/*['!']         = SHELL_PARAM_SPECIAL_CHAR,*/
+	['&']         = SHELL_UNQUOTED_SPECIAL,
+	[' ']         = SHELL_LEX_WHITESPACE | SHELL_UNQUOTED_SPECIAL,
+	['\'']        = SHELL_UNQUOTED_SPECIAL,
+	['\0']        = SHELL_LEX_WHITESPACE | SHELL_UNQUOTED_SPECIAL,
+	['\t']        = SHELL_LEX_WHITESPACE | SHELL_UNQUOTED_SPECIAL,
+	['\f']        = SHELL_LEX_WHITESPACE,
+	['\v']        = SHELL_LEX_WHITESPACE,
+	['\n']        = SHELL_UNQUOTED_SPECIAL,
+	['\r']        = SHELL_UNQUOTED_SPECIAL,
+	[';']         = SHELL_UNQUOTED_SPECIAL,
+	['|']         = SHELL_UNQUOTED_SPECIAL,
+	['>']         = SHELL_UNQUOTED_SPECIAL,
+	['<']         = SHELL_UNQUOTED_SPECIAL,
+};
+
+
 /*
  * Split a unquoted string around whitespace produced by parameter
  * expansion.

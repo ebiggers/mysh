@@ -72,6 +72,9 @@ static ssize_t scan_double_quoted_string(const char *p,
 			/* found terminating double-quote */
 			--bytes_remaining;
 			break;
+		} else if (c == '\n' && escape) {
+			/* Remove escaped newline */
+			escape = false;
 		} else {
 			if (escape && !(shell_char_type(c) & SHELL_DOUBLE_QUOTE_SPECIAL)) {
 				/* backslash followed by a character that does
@@ -92,23 +95,6 @@ static ssize_t scan_double_quoted_string(const char *p,
 	return len;
 }
 
-static const unsigned char is_special[256] = {
-	['\0'] = 1,
-	['\\'] = 1,
-	['\''] = 1,
-	['"']  = 1,
-	['&']  = 1,
-	['#']  = 1,
-	[';']  = 1,
-	['|']  = 1,
-	['>']  = 1,
-	['<']  = 1,
-	[' ']  = 1,
-	['\t'] = 1,
-	['\n'] = 1,
-	['\r'] = 1,
-};
-
 static ssize_t scan_unquoted_string(const char *p,
 				    size_t *bytes_remaining_p, char *out_buf)
 {
@@ -119,7 +105,7 @@ static ssize_t scan_unquoted_string(const char *p,
 	for (;; p++, bytes_remaining--) {
 		if (!bytes_remaining)
 			return LEX_NOT_ENOUGH_INPUT;
-		if (is_special[(unsigned char)*p]) {
+		if (shell_char_type(*p) & SHELL_UNQUOTED_SPECIAL) {
 			if (*p == '\0') {
 				mysh_error("illegal null byte in unquoted string");
 				return LEX_ERROR;
@@ -132,6 +118,10 @@ static ssize_t scan_unquoted_string(const char *p,
 					 * at the # of $# */
 				} else if (!(*p == '#' && p != orig_p && *(p - 1) == '$'))
 					break;
+			} else if (escape && *p == '\n') {
+				/* Remove escaped newline */
+				escape = false;
+				continue;
 			}
 		}
 		if (out_buf)
