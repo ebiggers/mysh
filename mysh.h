@@ -50,7 +50,7 @@ struct redirection {
 	union {
 		int src_fd;
 		struct {
-			const char *src_filename;
+			char *src_filename;
 			int open_flags;
 		};
 	};
@@ -158,8 +158,7 @@ extern int parse_tok_list(struct list_head *toks,
 
 /* mysh_redir.c */
 struct orig_fds {
-	int orig_stdin;
-	int orig_stdout;
+	int fds[3];
 };
 
 extern int undo_redirections(const struct orig_fds *orig);

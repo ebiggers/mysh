@@ -138,6 +138,16 @@ static int process_var_assignments(const struct list_head *assignments)
 	return 0;
 }
 
+static void free_redir_list(struct list_head *redir_list)
+{
+	struct redirection *redir, *tmp;
+	list_for_each_entry_safe(redir, tmp, redir_list, list) {
+		if (redir->is_file)
+			free(redir->src_filename);
+		free(redir);
+	}
+}
+
 /* Executes a pipeline.  This includes the trivial pipeline consisting of only 1
  * comment.
  *
@@ -292,8 +302,7 @@ out_free_lists:
 	do {
 		free_string_list(&cmd_arg_lists[i]);
 		free_string_list(&var_assignment_lists[i]);
-		/* XXX */
-		/*free_string_list(&redir_lists[i]);*/
+		free_redir_list(&redir_lists[i]);
 	} while (++i != ncommands);
 	return ret;
 }

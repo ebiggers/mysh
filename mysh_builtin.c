@@ -365,7 +365,7 @@ static int execute_builtin(const struct builtin *builtin,
 			   const struct list_head *redirs,
 			   unsigned cmd_nargs)
 {
-	struct orig_fds orig = {-1, -1};
+	struct orig_fds orig;
 	const char *argv[cmd_nargs + 1];
 	struct string *s;
 	unsigned i;

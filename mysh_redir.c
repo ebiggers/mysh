@@ -11,71 +11,54 @@
 int undo_redirections(const struct orig_fds *orig)
 {
 	int ret = 0;
-	if (orig->orig_stdin >= 0)
-		if (dup2(orig->orig_stdin, STDIN_FILENO) < 0)
-			ret = -1;
-	if (orig->orig_stdout >= 0)
-		if (dup2(orig->orig_stdout, STDOUT_FILENO) < 0)
-			ret = -1;
+	int i;
+	for (i = 0; i < ARRAY_SIZE(orig->fds); i++)
+		if (orig->fds[i] >= 0)
+			if (dup2(orig->fds[i], i) < 0)
+				ret = -1;
 	return ret;
 }
 
-/* Apply the redirections in the token list @redirs.  If @orig is non-NULL, save
- * the original file descriptors in there.  Return %true on success, %false on
- * failure. */
+/* Apply the redirections in the list @redirs.  If @orig is non-NULL, save the
+ * original file descriptors in there. */
 int do_redirections(const struct list_head *redirs, struct orig_fds *orig)
 {
-	return 0;
-#if 0
-	while (redirs && (redirs->type & TOK_CLASS_REDIRECTION)) {
-		int open_flags;
-		int dest_fd;
-		int *orig_fd_p = NULL;
-		int ret;
-		int fd;
-		const char *filename;
+	int i;
+	int ret;
+	struct redirection *redir;
 
-		if (redirs->type == TOK_GREATER_THAN) {
-			open_flags = O_RDONLY;
-			dest_fd = STDIN_FILENO;
-			if (orig)
-				orig_fd_p = &orig->orig_stdin;
-		} else {
-			open_flags = O_WRONLY | O_TRUNC | O_CREAT;
-			dest_fd = STDOUT_FILENO;
-			if (orig)
-				orig_fd_p = &orig->orig_stdout;
-		}
-
-		if (orig_fd_p != NULL && *orig_fd_p < 0) {
-			*orig_fd_p = dup(dest_fd);
-			if (*orig_fd_p < 0) {
-				mysh_error_with_errno("Failed to duplicate "
-						      "file descriptor %d", dest_fd);
+	if (orig)
+		for (i = 0; i < ARRAY_SIZE(orig->fds); i++)
+			orig->fds[i] = -1;
+	list_for_each_entry(redir, redirs, list) {
+		int src_fd;
+		if (redir->is_file) {
+			src_fd = open(redir->src_filename, redir->open_flags, 0666);
+			if (src_fd < 0) {
+				mysh_error_with_errno("can't open %s for %s",
+						      redir->src_filename,
+						      (redir->open_flags & O_WRONLY)
+						      ? "writing" : "reading");
+				ret = -1;
 				goto out_undo_redirections;
 			}
+		} else {
+			src_fd = redir->src_fd;
 		}
 
-		redirs = redirs->next;
-		filename = redirs->tok_data;
-		redirs = redirs->next;
-		fd = open(filename, open_flags, 0666);
-		if (fd < 0) {
-			mysh_error_with_errno("can't open %s", filename);
-			goto out_undo_redirections;
-		}
-		ret = dup2(fd, dest_fd);
-		close(fd);
+		ret = dup2(src_fd, redir->dest_fd);
+		if (redir->is_file)
+			close(src_fd);
 		if (ret < 0) {
-			mysh_error_with_errno("can't perform redirection to or from %s",
-					      filename);
+			mysh_error_with_errno("can't perform redirection");
 			goto out_undo_redirections;
 		}
 	}
-	return 0;
+	ret = 0;
+	goto out;
 out_undo_redirections:
 	if (orig)
 		(void)undo_redirections(orig);
-	return -1;
-#endif
+out:
+	return ret;
 }

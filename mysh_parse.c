@@ -509,6 +509,12 @@ static int add_redirection(const struct redir_spec *spec,
 		int right_fd = strtol(right_string->chars, &tmp, 10);
 		if (right_fd >= 0 && tmp != right_string->chars && !*tmp)
 			redir->src_fd = right_fd;
+		else {
+			mysh_error("expected valid file descriptor "
+				   "after redirection operator");
+			ret = -1;
+			goto out_free_string;
+		}
 		redir->is_file = false;
 	} else {
 		redir->src_filename = right_string->chars; // XXX
@@ -517,6 +523,7 @@ static int add_redirection(const struct redir_spec *spec,
 		redir->open_flags = spec->open_flags;
 		redir->is_file = true;
 	}
+out_free_string:
 	free_string(right_string);
 out:
 	if (ret == 0)
@@ -620,7 +627,7 @@ static int parse_next_redirection(struct list_head *toks,
 			/* [N]<&WORD  (duplicate input file descriptor) */
 			if (tok3 && tok3->type & TOK_CLASS_STRING) {
 				ret = add_redirection(&redir_specs[DUP_INPUT_FD_NUM],
-						      prev_string, tok2,
+						      prev_string, tok3,
 						      next_token_nodel(toks),
 						      redirs);
 				break;
