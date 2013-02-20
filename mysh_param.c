@@ -428,7 +428,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 
 	var_end = s->chars;
 	dollar_sign = strchr(var_end, '$');
-	if (!dollar_sign) { 
+	if (!dollar_sign || *(dollar_sign + 1) == '\0') { 
 		/* No parameter expansion to be done.
 		 * Return the original string. */
 		*param_char_map = NULL; 
@@ -494,7 +494,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 				append_param(var_begin, var_end - var_begin,
 					     &string_list);
 		}
-	} while ((dollar_sign = strchr(var_end, '$')));
+	} while ((dollar_sign = strchr(var_end, '$')) && *(dollar_sign + 1) != '\0');
 
 	/* Append any remaining literal characters */
 	if (*var_end)

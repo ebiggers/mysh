@@ -28,8 +28,6 @@
  *
  * Limitations:
  *   - Control statements such as 'if', 'for', and 'case' are not supported.
- *   - Redirecting standard error is not possible; 2>&1 and similar redirections
- *     will not work at all.
  *   - Functions are not supported.
  *   - Command substitution is not supported.
  *   - Arithmetic expansion is not supported.

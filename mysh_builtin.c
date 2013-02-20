@@ -386,14 +386,16 @@ static int execute_builtin(const struct builtin *builtin,
 	}
 	argv[i] = NULL;
 	/* Call the builtin function */
-	builtin->func(cmd_nargs, argv);
+	status = builtin->func(cmd_nargs, argv);
 
-	/* Undo redirections for the builtin */
-	ret = undo_redirections(&orig);
-	if (ret) {
-		if (status == 0)
-			status = ret;
-		mysh_error_with_errno("Failed to restore redirections");
+	/* Undo redirections for the builtin, unless this was the 'exec' builtin */
+	if (builtin->func != builtin_exec) {
+		ret = undo_redirections(&orig);
+		if (ret) {
+			if (status == 0)
+				status = ret;
+			mysh_error_with_errno("Failed to restore redirections");
+		}
 	}
 	return status;
 }
