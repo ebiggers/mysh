@@ -1,4 +1,4 @@
-CFLAGS  := -O0 -Wall -g
+CFLAGS  := -O2 -Wall -g
 OBJ     := mysh_builtin.o mysh_lex.o mysh_main.o mysh_param.o mysh_parse.o mysh_redir.o mysh_util.o 
 HEADERS := mysh.h
 EXE     := mysh

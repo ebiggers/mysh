@@ -194,7 +194,7 @@ static int expand_params_and_word_split(struct token *tok,
 {
 	struct string *s;
 	bool leading_whitespace;
-	unsigned char *param_char_map;
+	unsigned char *param_char_map = NULL;
 
 	mysh_assert(tok->type & TOK_CLASS_STRING);
 	mysh_assert(list_empty(out_list));
@@ -476,7 +476,7 @@ static int add_redirection(const struct redir_spec *spec,
 			   struct list_head *redirs)
 {
 	struct redirection *redir = xmalloc(sizeof(struct redirection));
-	int ret;
+	int ret = 0;
 	struct string *right_string;
 
 	redir->dest_fd = spec->default_left_fd;

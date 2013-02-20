@@ -103,8 +103,8 @@ static void insert_param(struct param_trie_node *node,
 	while (node->value == NULL && node->num_children == 0) {
 		struct param_trie_node **parent_child_ptr = node->parent_child_ptr;
 		struct param_trie_node *parent = node->parent;
-		free(node);
 		if (parent) {
+			free(node);
 			*parent_child_ptr = NULL;
 			parent->num_children--;
 		} else {

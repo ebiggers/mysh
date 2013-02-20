@@ -12,10 +12,14 @@ int undo_redirections(const struct orig_fds *orig)
 {
 	int ret = 0;
 	int i;
-	for (i = 0; i < ARRAY_SIZE(orig->fds); i++)
-		if (orig->fds[i] >= 0)
+	for (i = 0; i < ARRAY_SIZE(orig->fds); i++) {
+		if (orig->fds[i] >= 0) {
 			if (dup2(orig->fds[i], i) < 0)
 				ret = -1;
+			if (close(orig->fds[i]) < 0)
+				ret = -1;
+		}
+	}
 	return ret;
 }
 
@@ -46,6 +50,15 @@ int do_redirections(const struct list_head *redirs, struct orig_fds *orig)
 			src_fd = redir->src_fd;
 		}
 
+		if (orig &&
+		    redir->dest_fd < ARRAY_SIZE(orig->fds) &&
+		    orig->fds[redir->dest_fd] < 0)
+		{
+			ret = dup(redir->dest_fd);
+			if (ret < 0)
+				goto out_undo_redirections;
+			orig->fds[redir->dest_fd] = ret;
+		}
 		ret = dup2(src_fd, redir->dest_fd);
 		if (redir->is_file)
 			close(src_fd);
