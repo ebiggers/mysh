@@ -233,7 +233,7 @@ lookup_shell_param(const char *name)
 
 static char *get_all_positional_params()
 {
-	size_t total_len = 0;
+	size_t total_len = 1;
 	unsigned i;
 	char *p;
 
@@ -243,6 +243,7 @@ static char *get_all_positional_params()
 		total_len += strlen(positional_parameters[i]);
 	total_len += num_positional_parameters;
 	all_positional_params = p = xmalloc(total_len);
+	*p = '\0';
 	for (i = 1; i <= num_positional_parameters; i++) {
 		p = stpcpy(p, positional_parameters[i]);
 		if (i != num_positional_parameters)
@@ -522,7 +523,8 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
  * @param0:      String to set as the $0 variable.
  * @params:      Array of length @num_params that gives the positional
  *               parameters $1, $2, ... $@num_params. */
-void set_positional_params(int num_params, char *param0, char **params)
+void set_positional_params(int num_params, const char *param0,
+			   const char **params)
 {
 	unsigned i;
 	destroy_positional_params();

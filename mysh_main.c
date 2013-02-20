@@ -330,8 +330,6 @@ static void set_up_signal_handlers()
 		mysh_error_with_errno("Failed to set up signal handlers");
 }
 
-#define DEFAULT_INPUT_BUFSIZE 4096
-
 /*
  * Execute input to the shell.
  *
@@ -411,63 +409,25 @@ int execute_full_shell_input(const char *input, size_t len)
 	return mysh_last_exit_status;
 }
 
-int main(int argc, char **argv)
+#define DEFAULT_INPUT_BUFSIZE 4096
+
+/* Execute shell input from the file descriptor @in_fd until end-of-file.
+ * Closes the file descriptor when done.
+ *
+ * @interactive specifies whether the shell prompt should be written after each
+ * line or not.  
+ *
+ * Return value is exit status of last shell statement executed, or -1 on error
+ * (including read errors and parse errors). */
+int read_loop(int in_fd, bool interactive)
 {
-	int c;
-	int in_fd;
-	int ret;
-	bool from_stdin = false;
-	bool interactive = false;
 	char *input_buf;
 	size_t input_data_begin;
 	size_t input_data_end;
 	size_t input_buf_len;
-
+	int ret;
 	LIST_HEAD(cur_tok_list);
 
-	set_up_signal_handlers();
-	init_param_map();
-
-	while ((c = getopt(argc, argv, "c:is")) != -1) {
-		switch (c) {
-		case 'c':
-			/* execute string provided on the command line */
-			set_positional_params(argc - optind, argv[optind - 1], &argv[optind]);
-			execute_full_shell_input(optarg, strlen(optarg));
-			goto out;
-		case 's':
-			/* read from stdin */
-			from_stdin = true;
-			break;
-		case 'i':
-			interactive = true;
-			break;
-		default:
-			mysh_error("invalid option");
-			mysh_last_exit_status = 2;
-			goto out;
-		}
-	}
-	argc -= optind;
-	argv += optind;
-
-	(void)set_pwd();
-
-	if (argc && !from_stdin) {
-		in_fd = open(argv[0], O_RDONLY);
-		if (in_fd < 0) {
-			mysh_error_with_errno("can't open %s", argv[0]);
-			mysh_last_exit_status = -1;
-			goto out;
-		}
-		set_positional_params(argc - 1, argv[0], argv + 1);
-	} else {
-		set_positional_params(argc, argv[-1], argv);
-		in_fd = STDIN_FILENO;
-	}
-	if (isatty(in_fd))
-		interactive = true;
-	mysh_last_exit_status = 0;
 	input_buf_len = DEFAULT_INPUT_BUFSIZE;
 	input_buf = xmalloc(input_buf_len);
 	input_data_begin = 0;
@@ -548,6 +508,61 @@ int main(int argc, char **argv)
 out_break_read_loop:
 	close(in_fd);
 	free(input_buf);
+	return mysh_last_exit_status;
+}
+
+int main(int argc, char **argv)
+{
+	int c;
+	int in_fd;
+	bool from_stdin = false;
+	bool interactive = false;
+
+	set_up_signal_handlers();
+	init_param_map();
+
+	optind = 1;
+	while ((c = getopt(argc, argv, "c:is")) != -1) {
+		switch (c) {
+		case 'c':
+			/* execute string provided on the command line */
+			set_positional_params(argc - optind, argv[optind - 1],
+					      (const char **)&argv[optind]);
+			execute_full_shell_input(optarg, strlen(optarg));
+			goto out;
+		case 's':
+			/* read from stdin */
+			from_stdin = true;
+			break;
+		case 'i':
+			interactive = true;
+			break;
+		default:
+			mysh_error("invalid option");
+			mysh_last_exit_status = 2;
+			goto out;
+		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	(void)set_pwd();
+
+	if (argc && !from_stdin) {
+		in_fd = open(argv[0], O_RDONLY);
+		if (in_fd < 0) {
+			mysh_error_with_errno("can't open %s", argv[0]);
+			mysh_last_exit_status = -1;
+			goto out;
+		}
+		set_positional_params(argc - 1, argv[0], (const char **)(argv + 1));
+	} else {
+		set_positional_params(argc, argv[-1], (const char **)argv);
+		in_fd = STDIN_FILENO;
+	}
+	if (isatty(in_fd))
+		interactive = true;
+	mysh_last_exit_status = read_loop(in_fd, interactive);
 out:
 	destroy_positional_params();
 	destroy_param_map();

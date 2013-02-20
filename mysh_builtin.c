@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <string.h>
 
 extern const char **environ;
@@ -224,7 +225,7 @@ remaining_params:
 	if (pos_params_idx != 0) {
 		set_positional_params(pos_params_idx,
 				      positional_parameters[0],
-				      (char**)pos_params);
+				      pos_params);
 	}
 	ret = 0;
 out:
@@ -282,6 +283,26 @@ static int builtin_shift(unsigned argc, const char **argv)
 	return 0;
 }
 
+
+static int builtin_source(unsigned argc, const char **argv)
+{
+	int in_fd;
+
+	if (argc == 0) {
+		mysh_error("source: requires filename");
+		return 2;
+	}
+
+	/* TODO: Save positional parameters to restore later */
+	set_positional_params(argc - 1, argv[0], argv + 1);
+	in_fd = open(argv[0], O_RDONLY);
+	if (in_fd < 0) {
+		mysh_error_with_errno("can't open %s", argv[0]);
+		return 1;
+	}
+	return read_loop(in_fd, false);
+}
+
 static int builtin_unset(unsigned argc, const char **argv)
 {
 	while (argc--)
@@ -306,6 +327,7 @@ static int builtin_help(unsigned argc, const char **argv);
 
 /* Table of builtins recognized by the shell */
 static const struct builtin builtins[] = {
+	{".",      builtin_source, ". filename [arguments ...]"},
 	{":",      builtin_dummy,  ":"},
 	{"cd",     builtin_cd,     "cd [DIR]"},
 	{"eval",   builtin_eval,   "eval [arg ...]"},
@@ -318,6 +340,7 @@ static const struct builtin builtins[] = {
 	{"set",    builtin_set,    "set [[-+]efnv] [--] [arg ...]"},
 	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
 	{"shift",  builtin_shift,  "shift [N]"},
+	{"source", builtin_source, "source filename [arguments ...]"},
 	{"unset",  builtin_unset,  "unset [name ...]"},
 };
 

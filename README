@@ -222,6 +222,7 @@ Builtins
 
 Some builtins have been described already.  The full list of builtins is:
 
+. filename [arguments ...]
 :
 cd [DIR]
 eval [arg ...]
@@ -234,6 +235,7 @@ pwd
 set [[-+]fev] [--] [arg ...]
 setenv VARIABLE [VALUE]
 shift [N]
+source filename [arguments ...]
 unset [name ...]
 
 Limitation: the output from a builtin currently cannot be piped into another
