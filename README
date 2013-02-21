@@ -259,7 +259,7 @@ command.  ('echo' works only because it hasn't been implemented as a builtin).
 Command line editing
 ====================
 
-There are no features to make command line editing easier.
+Readline is supported for interactive use.
 
 Command prompt
 ==============

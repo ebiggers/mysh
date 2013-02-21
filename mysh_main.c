@@ -16,6 +16,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef WITH_READLINE
+#include <readline/readline.h>
+#include <readline/history.h>
+#endif
 
 /* globals */
 int mysh_last_exit_status;
@@ -436,16 +440,31 @@ out:
 	return ret;
 }
 
+static void sigint_handler(int sig)
+{
+	/*fputs("in sig handler\n", stderr);*/
+	/*sleep(10);*/
+	return;
+	/*putchar('\n');*/
+	/*fflush(stdout);*/
+}
+
 static void set_up_signal_handlers()
 {
-#if 0
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGINT, &act, NULL) ||
-	    sigaction(SIGTERM, &act, NULL))
-		mysh_error_with_errno("Failed to set up signal handlers");
-#endif
+	if (sigaction(SIGTERM, &act, NULL))
+		goto fail;
+	/*if (sigaction(SIGHUP, &act, NULL))*/
+		/*goto fail;*/
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = sigint_handler;
+	if (sigaction(SIGINT, &act, NULL))
+		goto fail;
+	return;
+fail:
+	mysh_error_with_errno("Failed to set up signal handlers");
 }
 
 /*
@@ -556,10 +575,36 @@ int read_loop(int in_fd, bool interactive)
 		size_t bytes_remaining;
 		size_t bytes_to_read;
 
-		/* Print command prompt */
 		if (interactive) {
-			printf("%s $ ", lookup_shell_param("PWD"));
+		#ifdef WITH_READLINE
+			const char *prompt;
+			if (list_empty(&cur_tok_list))
+				prompt = "$ ";
+			else
+				prompt = "> ";
+			char *p = readline(prompt);
+			if (!p)
+				goto out_break_read_loop;
+			if (*p)
+				add_history(p);
+			bytes_read = strlen(p) + 1;
+			if (bytes_read > input_buf_len - input_data_end) {
+				input_buf_len *= 2;
+				if (bytes_read > input_buf_len - input_data_end)
+					input_buf_len += bytes_read -
+						(input_buf_len - input_data_end);
+				input_buf = xrealloc(input_buf, input_buf_len);
+			}
+			memcpy(&input_buf[input_data_begin], p, bytes_read);
+			input_buf[input_data_begin + bytes_read - 1] = '\n';
+			free(p);
+			goto skip_read;
+		#else
+			/*printf("%s $ ", lookup_shell_param("PWD"));*/
+			putc('$', stdout);
+			putc(' ', stdout);
 			fflush(stdout);
+		#endif
 		}
 
 		/* Check for background pipelines that have terminated */
@@ -577,7 +622,12 @@ int read_loop(int in_fd, bool interactive)
 					bytes_remaining);
 				input_data_begin = 0;
 				input_data_end = bytes_remaining;
-			} else if (input_data_end == input_buf_len) {
+			} else if (input_data_end == input_buf_len
+			#ifdef WITH_READLINE
+				   && !interactive
+			#endif
+				   )
+			{
 				/* Buffer is full or almost full */
 				input_buf_len *= 2;
 				input_buf = xrealloc(input_buf, input_buf_len);
@@ -588,6 +638,9 @@ int read_loop(int in_fd, bool interactive)
 		/* Read data into the buffer */
 		bytes_to_read = input_buf_len - input_data_end;
 		bytes_read = read(in_fd, &input_buf[input_data_end], bytes_to_read);
+#ifdef WITH_READLINE
+	skip_read:
+#endif
 		if (bytes_read == 0) {
 			/* EOF */
 			if (input_data_end - input_data_begin != 0) {
@@ -722,6 +775,7 @@ int main(int argc, char **argv)
 	}
 	if (isatty(in_fd))
 		interactive = true;
+
 	read_loop(in_fd, interactive);
 out:
 	destroy_positional_params();
