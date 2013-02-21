@@ -44,7 +44,7 @@ Follow a pipeline with the '&' character to execute it asynchronously.  Its job
 number and the pid of the last command in the pipeline will be printed.
 Multiple concurrent background pipelines are supported.  The shell will check if
 any background pipelines have terminated after each additional line of input,
-and will their job numbers and pids again if so.  Real job control is not
+and will print their job numbers and pids again if so.  Real job control is not
 supported, so you cannot actually refer to background pipelines by their job
 numbers.
 
