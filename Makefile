@@ -7,7 +7,7 @@ HEADERS := mysh.h
 EXE     := mysh
 
 $(EXE):$(OBJ)
-	gcc -o $@ $(CFLAGS) $+
+	$(CC) -o $@ $(CFLAGS) $+
 
 $(OBJ): mysh.h
 
