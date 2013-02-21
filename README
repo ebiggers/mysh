@@ -301,3 +301,6 @@ this doesn't really make any difference if the shell is used interactively.)
 
 New builtin commands can easily be added by implementing the builtin function
 and adding an entry to the table in mysh_builtin.c.
+
+Lists are used in lots of places in the code.  I borrowed the header from the
+Linux kernel for this, since I think it's a good way to do lists in C.
