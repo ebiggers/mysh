@@ -37,6 +37,17 @@ string\
 containing\
 newlines > outfile; NEWVAR=value env
 
+Asynchronous commands
+=====================
+
+Follow a pipeline with the '&' character to execute it asynchronously.  Its job
+number and the pid of the last command in the pipeline will be printed.
+Multiple concurrent background pipelines are supported.  The shell will check if
+any background pipelines have terminated after each additional line of input,
+and will their job numbers and pids again if so.  Real job control is not
+supported, so you cannot actually refer to background pipelines by their job
+numbers.
+
 Shell variables and parameter expansion
 =======================================
 
@@ -71,6 +82,9 @@ parameters are supported:
   $*, $@             All positional parameters, space-separated
   $$                 Current process ID
   $?                 Exit status of last executed command
+  $!                 Process ID of last component of last executed background
+                         pipeline, or unset if no background pipelines have been
+                         executed in the current shell.
 
 Note: $@ currently does not behave correctly when used in a double-quoted string
 (compared to a POSIX-compliant shell).  Also, the $IFS variable is not
@@ -130,28 +144,28 @@ Redirections
 A number of redirection operators are supported:
 
 - Redirect file descriptor N (defaults to standard output) to a file:
-	[N]>FILENAME
+        [N]>FILENAME
 
 - Redirect file descriptor N (defaults to standard output) to a file, but start
   writing at the end of the file rather than overwriting it:
-	[N]>>FILENAME
+        [N]>>FILENAME
 
 - Redirect both standard output and standard error to a file:
-	&>FILENAME
+        &>FILENAME
 
 - Append both standard output and standard error to a file:
-	&>>FILENAME
+        &>>FILENAME
 
 - Make file descriptor N, which defaults to standard output, be a copy of file
   descriptor M:
-	[N]>&M
+        [N]>&M
 
 - Redirect a file to an input file descriptor, defaulting to standard input:
-	[N]<FILENAME
+        [N]<FILENAME
 
 - Make file descriptor N, which defaults to standard input, be a copy of file
   descriptor M:
-	[N]<&M
+        [N]<&M
 
 Redirections are made only for the preceding command, unless the 'exec' builtin
 is used with no arguments, in which case any redirections take place in the
@@ -246,18 +260,6 @@ Command line editing
 ====================
 
 There are no features to make command line editing easier.
-
-Job control
-===========
-
-Job control is not supported.
-
-Asynchronous commands
-=====================
-
-Follow a pipeline with the '&' character to execute it in the background.  There
-is no way to wait for an asynchronous command to finish, or to retrieve its exit
-status.
 
 Command prompt
 ==============

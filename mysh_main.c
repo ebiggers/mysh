@@ -23,6 +23,96 @@ int mysh_filename_expansion_disabled;
 int mysh_exit_on_error;
 int mysh_write_input_to_stderr;
 int mysh_noexecute;
+int mysh_last_background_pid;
+
+struct background_pipeline {
+	struct list_head list;
+	unsigned num;
+	unsigned npids;
+	pid_t last_pid;
+	pid_t pids[0];
+};
+
+static LIST_HEAD(background_pipelines);
+
+static unsigned get_next_job_number()
+{
+	unsigned n = 1;
+	const struct background_pipeline *p;
+	list_for_each_entry(p, &background_pipelines, list)
+		if (n <= p->num)
+			n = p->num + 1;
+	return n;
+}
+
+static int add_background_pipeline(const pid_t child_pids[], unsigned npids)
+{
+	struct background_pipeline *p;
+
+	mysh_assert(npids != 0);
+	p = xmalloc(sizeof(*p) + npids * sizeof(pid_t));
+
+	p->num = get_next_job_number();
+	p->npids = npids;
+	p->last_pid = mysh_last_background_pid = child_pids[npids - 1];
+	memcpy(p->pids, child_pids, npids * sizeof(pid_t));
+	list_add_tail(&p->list, &background_pipelines);
+
+	printf("[%u] %d\n", p->num, p->last_pid);
+	return 0;
+}
+
+static int wait_for_children(const pid_t child_pids[], unsigned npids)
+{
+	int ret;
+	unsigned i = 0;
+	int status;
+	do {
+		if (waitpid(child_pids[i], &status, 0) == -1) {
+			ret = -1;
+			mysh_error_with_errno("failed to wait for child process "
+					      "(pid %d) to terminate ",
+					      child_pids[i]);
+		} else {
+			if (WIFEXITED(status))
+				ret = WEXITSTATUS(status);
+			else
+				ret = -1;
+		}
+	} while (++i != npids);
+	return ret;
+}
+
+static void check_for_finished_background_pipelines()
+{
+	struct background_pipeline *p, *tmp;
+
+	list_for_each_entry_safe(p, tmp, &background_pipelines, list) {
+		unsigned rem_pids = p->npids;
+		unsigned i = 0;
+		do {
+			if (p->pids[i] < 0) {
+				rem_pids--;
+			} else {
+				int status;
+				int ret;
+				ret = waitpid(p->pids[i], &status, WNOHANG);
+				if (ret == -1) {
+					mysh_error_with_errno("wait error");
+				} else if (ret != 0) {
+					rem_pids--;
+					p->pids[i] = -1;
+				}
+			}
+		} while (++i != p->npids);
+		if (rem_pids == 0) {
+			printf("[%u]+ Done                  %d\n", p->num, p->last_pid);
+			list_del(&p->list);
+			free(p);
+		}
+	}
+}
+
 
 /* Executed by the child process after a fork().  The child now must set up
  * redirections (if any) and execute the new program. */
@@ -259,27 +349,16 @@ out_close_pipes:
 	if (prev_read_end >= 0)
 		close(prev_read_end);
 	/* If no error has occurred and the pipeline is not being executed
-	 * asynchronously, wait for the commands to terminate.  Note that 'ret'
-	 * is set to the exit status of the last command in the pipeline. */
-	if (ret == 0 && !async) {
-		i = 0;
-		do {
-			int status;
-			ret = waitpid(child_pids[i], &status, 0);
-			if (ret == -1) {
-				mysh_error_with_errno("failed to wait for child process "
-						      "(%s: pid %d) to terminate ",
-						      list_entry(cmd_arg_lists[i].next,
-								 struct string,
-								 list)->chars,
-						      child_pids[i]);
-			} else {
-				if (WIFEXITED(status))
-					ret = WEXITSTATUS(status);
-				else
-					ret = -1;
-			}
-		} while (++i != ncommands);
+	 * asynchronously, wait for the commands to terminate.  'ret' is set to
+	 * the exit status of the last command in the pipeline.
+	 *
+	 * If the pipeline is to be asynchronous, don't wait for any children;
+	 * just add an entry to the list of background pipelines. */
+	if (ret == 0) {
+		if (async)
+			ret = add_background_pipeline(child_pids, ncommands);
+		else
+			ret = wait_for_children(child_pids, ncommands);
 	}
 out_free_lists:
 	i = 0;
@@ -350,12 +429,14 @@ out:
 
 static void set_up_signal_handlers()
 {
+#if 0
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = SIG_IGN;
 	if (sigaction(SIGINT, &act, NULL) ||
 	    sigaction(SIGTERM, &act, NULL))
 		mysh_error_with_errno("Failed to set up signal handlers");
+#endif
 }
 
 /*
@@ -471,6 +552,9 @@ int read_loop(int in_fd, bool interactive)
 			printf("%s $ ", lookup_shell_param("PWD"));
 			fflush(stdout);
 		}
+
+		/* Check for background pipelines that have terminated */
+		check_for_finished_background_pipelines();
 
 	read_again_check_buffer:
 		/* Check whether less than half the distance to the end of the

@@ -269,6 +269,14 @@ lookup_param(const char *name, size_t len)
 			/* $#: Number of positional parameters */
 			sprintf(buf, "%u", num_positional_parameters);
 			return buf;
+		case '!':
+			/* $!: pid of last process in last background pipeline */
+			if (mysh_last_background_pid == 0) {
+				return NULL;
+			} else {
+				sprintf(buf, "%d", mysh_last_background_pid);
+				return buf;
+			}
 		case '*':
 		case '@': /* Note: $@ does not yet behave correctly (it's treated the same as $*) */
 			/* All positional parameters */

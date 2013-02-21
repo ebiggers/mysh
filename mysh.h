@@ -97,6 +97,7 @@ extern int mysh_filename_expansion_disabled;
 extern int mysh_exit_on_error;
 extern int mysh_write_input_to_stderr;
 extern int mysh_noexecute;
+extern int mysh_last_background_pid;
 
 extern int read_loop(int in_fd, bool interactive);
 extern int execute_full_shell_input(const char *input, size_t len);
