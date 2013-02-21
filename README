@@ -7,11 +7,12 @@ Shell input
 The shell can take input in one of the following ways:
 
 - from standard input, which is done if the shell is executed with no non-option
-arguments, or is executed with the '-s' argument.  In the former case, the shell
-is considered interactive and will print a prompt before each line of input.
-- directly from the command line, which is done if the '-c' argument is passed.
+  arguments or is executed with the '-s' option.  In the former case, the
+  shell is considered interactive and will print a prompt before each line of
+  input.
+- directly from the command line, which is done if the '-c' option is passed.
 - from a shell script, which is done if the shell is executed with a non-option
-argument, which is interpreted as the same of a shell script to execute.
+  argument, which is interpreted as the same of a shell script to execute.
 
 Shell statements
 ================
@@ -165,10 +166,10 @@ Redirections currently have the following limitations:
     $ echo > file 1
 
   must be written as:
-    
+
     $ echo 1 > file
 
-- Here documents are here strings are not supported.
+- Here documents and here strings are not supported.
 
 - The special-case of >& with no specified file descriptors to mean &> is not
   supported.
@@ -232,7 +233,7 @@ export VARIABLE[=VALUE] ...
 getenv [VARIABLE]
 help [COMMAND]
 pwd
-set [[-+]fev] [--] [arg ...]
+set [(-+)fev] [--] [arg ...]
 setenv VARIABLE [VALUE]
 shift [N]
 source filename [arguments ...]
@@ -277,3 +278,24 @@ The exit status of the shell is the exit status of the last command executed, 1
 if the system ran out of memory, -1 if there was a parse error, or 2 if the
 shell could not understand its command line options, or 0 if the input to the
 shell was empty or consisted only of whitespace and comments.
+
+Implementation details
+======================
+
+External commands are executed using fork() and execpe().
+
+Pipes are created using pipe().
+
+The code to parse the shell input is all manually written (as opposed to using
+flex and bison).  This probably would make it more difficult to implement
+additional syntax such as control statements.
+
+Shell variables are kept in a prefix tree (trie) rather than a hash table.
+
+Input to the shell is read using read() because lines may be of unlimited
+length, and a shell statement need not correspond to one line of input--- so
+there's little reason to insist on always reading one line at a time.  (Note:
+this doesn't really make any difference if the shell is used interactively.)
+
+New builtin commands can easily be added by implementing the builtin function
+and adding an entry to the table in mysh_builtin.c.

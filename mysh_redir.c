@@ -2,6 +2,9 @@
  * mysh_redir.c
  *
  * Handles command redirections
+ *
+ * Note: The harder part (arguably) is actually parsing the redirections from
+ * the command line; this is done in mysh_parse.c.
  */
 
 #include "mysh.h"
@@ -55,8 +58,11 @@ int do_redirections(const struct list_head *redirs, struct orig_fds *orig)
 		    orig->fds[redir->dest_fd] < 0)
 		{
 			ret = dup(redir->dest_fd);
-			if (ret < 0)
+			if (ret < 0) {
+				mysh_error_with_errno("failed to duplicate "
+						      "file descriptor");
 				goto out_undo_redirections;
+			}
 			orig->fds[redir->dest_fd] = ret;
 		}
 		ret = dup2(src_fd, redir->dest_fd);

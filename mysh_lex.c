@@ -29,8 +29,8 @@ void free_tok_list(struct list_head *tok_list)
 }
 
 /* Single quotes preserve the literal value of every character in the string. */
-static ssize_t scan_single_quoted_string(const char *p,
-					 size_t *bytes_remaining_p, char *out_buf)
+static ssize_t
+scan_single_quoted_string(const char *p, size_t *bytes_remaining_p, char *out_buf)
 {
 	const char *term_quote;
 	ssize_t len;
@@ -50,18 +50,19 @@ static ssize_t scan_single_quoted_string(const char *p,
 	return len;
 }
 
-static ssize_t scan_double_quoted_string(const char *p,
-					 size_t *bytes_remaining_p, char *out_buf)
+static ssize_t
+scan_double_quoted_string(const char *p, size_t *bytes_remaining_p, char *out_buf)
 {
 	bool escape = false;
 	ssize_t len = 0;
 	size_t bytes_remaining = *bytes_remaining_p;
 	char c;
 
-	for (;; p++, bytes_remaining--) {
+	for (;;) {
 		if (!bytes_remaining)
 			return LEX_NOT_ENOUGH_INPUT;
-		c = *p;
+		bytes_remaining--;
+		c = *p++;
 		if (c == '\0') {
 			mysh_error("illegal null byte in double-quoted string");
 			return LEX_ERROR;
@@ -70,7 +71,6 @@ static ssize_t scan_double_quoted_string(const char *p,
 			escape = true;
 		} else if (c == '"' && !escape) {
 			/* found terminating double-quote */
-			--bytes_remaining;
 			break;
 		} else if (c == '\n' && escape) {
 			/* Remove escaped newline */
@@ -78,7 +78,9 @@ static ssize_t scan_double_quoted_string(const char *p,
 		} else {
 			if (escape && !(shell_char_type(c) & SHELL_DOUBLE_QUOTE_SPECIAL)) {
 				/* backslash followed by a character that does
-				 * not give backslash a special meaning */
+				 * not give backslash a special meaning means
+				 * that the backslash has to be output
+				 * literally. */
 				if (out_buf)
 					*out_buf++ = '\\';
 				len++;
@@ -95,8 +97,8 @@ static ssize_t scan_double_quoted_string(const char *p,
 	return len;
 }
 
-static ssize_t scan_unquoted_string(const char *p,
-				    size_t *bytes_remaining_p, char *out_buf)
+static ssize_t
+scan_unquoted_string(const char *p, size_t *bytes_remaining_p, char *out_buf)
 {
 	const char *orig_p = p;
 	ssize_t len = 0;
@@ -143,7 +145,7 @@ static int lex_string(const char *p, scan_string_t scan_string,
 	ssize_t len;
 	char *buf;
 	size_t bytes_remaining = *bytes_remaining_p;
-	
+
 	/* get string length */
 	len = scan_string(p, &bytes_remaining, NULL);
 	if (len < 0)
@@ -183,7 +185,10 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 	size_t bytes_remaining = *bytes_remaining_p;
 	int ret;
 
-	/* ignore whitespace between tokens */
+	if (*bytes_remaining_p == 0) /* No bytes remaining */
+		return LEX_NOT_ENOUGH_INPUT;
+
+	/* Ignore whitespace between tokens */
 	while (shell_char_type(*p) & SHELL_LEX_WHITESPACE) {
 		found_whitespace = true;
 		p++;
@@ -211,16 +216,16 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 		type = TOK_GREATER_THAN;
 		--bytes_remaining;
 		break;
-	case '#': /* everything after '#' character is a comment */
-		{
-			--bytes_remaining;
-			const char *newline = memchr(p + 1, '\n', bytes_remaining);
+	case '#':
+		{ /* everything after '#' up until the next newline is a comment */
+			const char *newline;
+
+			newline = memchr(p + 1, '\n', bytes_remaining - 1);
 			if (!newline)
 				return LEX_NOT_ENOUGH_INPUT;
 			bytes_remaining -= newline - p;
 		}
-		type = TOK_END_OF_SHELL_STATEMENT;
-		break;
+		/* fall through */
 	case '\r':
 	case '\n':
 	case ';':
@@ -230,14 +235,16 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 	case '\'':
 		type = TOK_SINGLE_QUOTED_STRING;
 		--bytes_remaining;
-		ret = lex_string(p + 1, scan_single_quoted_string, &bytes_remaining, &tok_data);
+		ret = lex_string(p + 1, scan_single_quoted_string,
+				 &bytes_remaining, &tok_data);
 		if (ret < 0)
 			return ret;
 		break;
 	case '"':
 		type = TOK_DOUBLE_QUOTED_STRING;
 		--bytes_remaining;
-		ret = lex_string(p + 1, scan_double_quoted_string, &bytes_remaining, &tok_data);
+		ret = lex_string(p + 1, scan_double_quoted_string,
+				 &bytes_remaining, &tok_data);
 		if (ret < 0)
 			return ret;
 		break;
@@ -245,7 +252,8 @@ int lex_next_token(const char *p, size_t *bytes_remaining_p,
 		/* anything that didn't match one of the special characters is
 		 * treated as the beginning of an unquoted string */
 		type = TOK_UNQUOTED_STRING;
-		ret = lex_string(p, scan_unquoted_string, &bytes_remaining, &tok_data);
+		ret = lex_string(p, scan_unquoted_string,
+				 &bytes_remaining, &tok_data);
 		if (ret < 0)
 			return ret;
 		break;

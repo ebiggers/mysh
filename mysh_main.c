@@ -25,16 +25,16 @@ int mysh_write_input_to_stderr;
 int mysh_noexecute;
 
 /* Executed by the child process after a fork().  The child now must set up
- * redirections of stdin and stdout (if any) and execute the new program. */
-static void
-start_child(const struct list_head * const cmd_args,
-	    const struct list_head * const redirs,
-	    const struct list_head * const var_assignments,
-	    const unsigned cmd_nargs,
-	    const unsigned pipeline_cmd_idx,
-	    const unsigned pipeline_ncommands,
+ * redirections (if any) and execute the new program. */
+static void __attribute__((noreturn))
+start_child(const struct list_head *cmd_args,
+	    const struct list_head *redirs,
+	    const struct list_head *var_assignments,
+	    unsigned cmd_nargs,
+	    unsigned pipeline_cmd_idx,
+	    unsigned pipeline_ncommands,
 	    const int pipe_fds[2],
-	    const int prev_read_end)
+	    int prev_read_end)
 {
 	char *argv[cmd_nargs + 1];
 	struct string *s;
@@ -73,6 +73,7 @@ start_child(const struct list_head * const cmd_args,
 	list_for_each_entry(s, cmd_args, list)
 		argv[i++] = s->chars;
 	argv[i] = NULL;
+	mysh_assert(i == cmd_nargs);
 
 	/* Set any environmental variables for this command */
 	list_for_each_entry(s, var_assignments, list) {
@@ -83,10 +84,12 @@ start_child(const struct list_head * const cmd_args,
 		}
 	}
 
-	/* Execute the new program */
+	/* Execute the new program.  execvp() automatically searches $PATH.
+	 * Note: this shell does not attempt to save time by remembering the
+	 * locations of executable programs on the $PATH. */
 	execvp(argv[0], argv);
 
-	/* Control only reaches here if execvp() failed */
+	/* Only reached if execvp() failed */
 	if (errno == ENOENT)
 		mysh_error("%s: command not found", argv[0]);
 	else
@@ -108,20 +111,23 @@ static void free_redir_list(struct list_head *redir_list)
 {
 	struct redirection *redir, *tmp;
 	list_for_each_entry_safe(redir, tmp, redir_list, list) {
+		list_del(&redir->list);
 		if (redir->is_file)
 			free(redir->src_filename);
 		free(redir);
 	}
 }
 
-/* Executes a pipeline.  This includes the trivial pipeline consisting of only 1
+/* Executes a pipeline.  This includes a trivial pipeline consisting of only 1
  * comment.
  *
- * @command_tokens:  An array that gives the lists of tokens for each command.
+ * @command_tokens:  An array that gives the lists of tokens for each command in
+ *                   the pipeline.
  * @ncommands:  Number of commands in the pipeline.
  *
- * Return value is the exit status of the last pipeline component on success, or
- * -1 if there was a problem with the execution of the pipeline itself.
+ * The return value is the exit status of the last pipeline component on
+ * success, or -1 if there was a problem with the execution of the pipeline
+ * itself.
  */
 static int execute_pipeline(struct list_head command_tokens[],
 			    unsigned ncommands)
@@ -136,12 +142,11 @@ static int execute_pipeline(struct list_head command_tokens[],
 	unsigned cmd_nargs[ncommands];
 	unsigned num_redirs[ncommands];
 
-	unsigned cmd_idx;
 	int pipe_fds[2];
 	int prev_read_end;
 	pid_t child_pids[ncommands];
 
-	mysh_assert(ncommands != 0);
+	mysh_assert(ncommands > 0);
 	async = false;
 	i = 0;
 	do {
@@ -166,23 +171,25 @@ static int execute_pipeline(struct list_head command_tokens[],
 		goto out_free_lists;
 
 	/* If the pipeline only has one command and is not being executed
-	 * asynchronously, try interpreting the command as a builtin.  Note:
-	 * this means that with the current code, builtins cannot be used as
-	 * parts of a multi-component pipeline. */
-	if (ncommands == 1 || !async) {
-		if (maybe_execute_builtin(&cmd_arg_lists[0], &redir_lists[0],
-					  cmd_nargs[0], &ret))
-			goto out_free_lists;
-		/* not a builtin */
-
-		/* if there are no arguments, just process leading variable
-		 * assignments */
+	 * asynchronously, try interpreting the command as a sequence of
+	 * variable assignments or as a shell builtin.  Note: this means that
+	 * with the current code, builtins cannot be used as parts of a
+	 * multi-component pipeline. */
+	if (ncommands == 1 && !async) {
 		if (cmd_nargs[0] == 0) {
+			/* No arguments: just process leading variable
+			 * assignments. */
 			ret = process_var_assignments(&var_assignment_lists[0]);
 			goto out_free_lists;
-		}
+		} else if (maybe_execute_builtin(&cmd_arg_lists[0],
+						 &redir_lists[0],
+						 cmd_nargs[0], &ret))
+			goto out_free_lists;
+		/* Not a builtin */
 	}
 
+	/* Verify that there is a command to execute for each component of the
+	 * pipeline (e.g. there isn't a component that is only redirections) */
 	i = 0;
 	do {
 		if (cmd_nargs[i] == 0) {
@@ -192,24 +199,19 @@ static int execute_pipeline(struct list_head command_tokens[],
 		}
 	} while (++i != ncommands);
 
-	/* Execute the commands */
+	/* Execute the commands in the pipeline.  This essentially is done by
+	 * fork() followed by execvp() for each command.  Redirections are
+	 * handled by the forked child processes before calling execvp().  Pipes
+	 * are created with pipe() before the fork.  Note that each component of
+	 * the pipeline other than the first and last is involved with two
+	 * different pipes: one to read from, and one to write to.  The
+	 * @prev_read_end variable is used to save the read end of a pipe for
+	 * the next pipeline component. */
 	prev_read_end = pipe_fds[0] = pipe_fds[1] = -1;
-	cmd_idx = 0;
+	i = 0;
 	do {
-		/* Close any pipes we created that are no longer needed; also
-		 * save the read end of the previous pipe (if any) in the
-		 * prev_read_end variable.  */
-		if (prev_read_end >= 0)
-			close(prev_read_end);
-		prev_read_end = pipe_fds[0];
-		pipe_fds[0] = -1;
-		if (pipe_fds[1] >= 0) {
-			close(pipe_fds[1]);
-			pipe_fds[1] = -1;
-		}
-
 		/* Unless this is the last command, create a new pair of pipes */
-		if (cmd_idx != ncommands - 1) {
+		if (i != ncommands - 1) {
 			if (pipe(pipe_fds)) {
 				mysh_error_with_errno("can't create pipes");
 				goto out_close_pipes;
@@ -223,17 +225,31 @@ static int execute_pipeline(struct list_head command_tokens[],
 			mysh_error_with_errno("can't fork child process");
 			goto out_close_pipes;
 		} else if (ret == 0) {
-			/* Child: set up file descriptors and execute new process */
-			start_child(&cmd_arg_lists[cmd_idx],
-				    &redir_lists[cmd_idx],
-				    &var_assignment_lists[cmd_idx],
-				    cmd_nargs[cmd_idx], cmd_idx, ncommands,
+			/* Child: set up redirections and execute new process */
+			start_child(&cmd_arg_lists[i],
+				    &redir_lists[i],
+				    &var_assignment_lists[i],
+				    cmd_nargs[i], i, ncommands,
 				    pipe_fds, prev_read_end);
-		} else {
-			/* Parent: save child pid in an array */
-			child_pids[cmd_idx] = ret;
+			/* Not reached */
+			mysh_assert(0);
 		}
-	} while (++cmd_idx != ncommands);
+
+		/* Parent: save child pid in an array */
+		child_pids[i] = ret;
+
+		/* Close any pipes we created that are no longer needed; also
+		 * save the read end of the pipe (if any) in the prev_read_end
+		 * variable.  */
+		if (prev_read_end >= 0)
+			close(prev_read_end);
+		prev_read_end = pipe_fds[0];
+		pipe_fds[0] = -1;
+		if (pipe_fds[1] >= 0) {
+			close(pipe_fds[1]);
+			pipe_fds[1] = -1;
+		}
+	} while (++i != ncommands);
 	ret = 0;
 out_close_pipes:
 	if (pipe_fds[0] >= 0)
@@ -242,16 +258,22 @@ out_close_pipes:
 		close(pipe_fds[1]);
 	if (prev_read_end >= 0)
 		close(prev_read_end);
+	/* If no error has occurred and the pipeline is not being executed
+	 * asynchronously, wait for the commands to terminate.  Note that 'ret'
+	 * is set to the exit status of the last command in the pipeline. */
 	if (ret == 0 && !async) {
 		i = 0;
 		do {
 			int status;
-			if (waitpid(child_pids[i], &status, 0) == -1) {
-				if (ret == 0)
-					ret = -1;
-				mysh_error_with_errno("Failed to wait for child with "
-						      "pid %d to terminate", child_pids[i]);
-			} else if (ret == 0) {
+			ret = waitpid(child_pids[i], &status, 0);
+			if (ret == -1) {
+				mysh_error_with_errno("failed to wait for child process "
+						      "(%s: pid %d) to terminate ",
+						      list_entry(cmd_arg_lists[i].next,
+								 struct string,
+								 list)->chars,
+						      child_pids[i]);
+			} else {
 				if (WIFEXITED(status))
 					ret = WEXITSTATUS(status);
 				else
@@ -279,6 +301,11 @@ static int execute_tok_list(struct list_head *tok_list)
 	int ret;
 	struct list_head *cur_list;
 
+	mysh_assert(!list_empty(tok_list) &&
+		    (list_entry(tok_list->prev, struct token, list)->type ==
+		    TOK_END_OF_SHELL_STATEMENT));
+	BUILD_BUG_ON((TOK_CLASS_CMD_BOUNDARY & TOK_END_OF_SHELL_STATEMENT) == 0);
+
 	/* Count the number of commands in the pipeline */
 	ncommands = 0;
 	list_for_each_entry(tok, tok_list, list)
@@ -297,8 +324,8 @@ static int execute_tok_list(struct list_head *tok_list)
 		goto out;
 	}
 
-	/* Split the tokens into individual lists (commands), around the '|'
-	 * signs. */
+	/* Split the tokens into individual lists (pipeline components), around
+	 * the '|' signs. */
 	cur_list = &command_tokens[0];
 	list_for_each_entry_safe(tok, tmp, tok_list, list) {
 		if (tok->type & TOK_CLASS_CMD_BOUNDARY) {
@@ -326,7 +353,8 @@ static void set_up_signal_handlers()
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = SIG_IGN;
-	if (sigaction(SIGINT, &act, NULL) != 0)
+	if (sigaction(SIGINT, &act, NULL) ||
+	    sigaction(SIGTERM, &act, NULL))
 		mysh_error_with_errno("Failed to set up signal handlers");
 }
 
@@ -335,11 +363,11 @@ static void set_up_signal_handlers()
  *
  * @cur_tok_list:  A list containing any previously parsed tokens for the
  *		   current shell statement.
- * 
+ *
  * @input:         Pointer to the shell input, not necessarily null-terminated.
  *
  * @bytes_remaining_p:
- *                 Number of bytes of input that are remaining.
+ *                 Pointer to number of bytes of input that are remaining.
  *
  * This function returns when any of the following is true:
  *    - There is no input remaining and there are no residual tokens.  In this
@@ -415,10 +443,11 @@ int execute_full_shell_input(const char *input, size_t len)
  * Closes the file descriptor when done.
  *
  * @interactive specifies whether the shell prompt should be written after each
- * line or not.  
+ * line or not.
  *
  * Return value is exit status of last shell statement executed, or -1 on error
- * (including read errors and parse errors). */
+ * (including read errors and parse errors).  This is the same as
+ * mysh_last_exit_status. */
 int read_loop(int in_fd, bool interactive)
 {
 	char *input_buf;
@@ -463,8 +492,8 @@ int read_loop(int in_fd, bool interactive)
 		}
 
 	read_again:
-		bytes_to_read = input_buf_len - input_data_end;
 		/* Read data into the buffer */
+		bytes_to_read = input_buf_len - input_data_end;
 		bytes_read = read(in_fd, &input_buf[input_data_end], bytes_to_read);
 		if (bytes_read == 0) {
 			/* EOF */
@@ -521,7 +550,6 @@ int main(int argc, char **argv)
 	set_up_signal_handlers();
 	init_param_map();
 
-	optind = 1;
 	while ((c = getopt(argc, argv, "c:is")) != -1) {
 		switch (c) {
 		case 'c':
@@ -562,7 +590,7 @@ int main(int argc, char **argv)
 	}
 	if (isatty(in_fd))
 		interactive = true;
-	mysh_last_exit_status = read_loop(in_fd, interactive);
+	read_loop(in_fd, interactive);
 out:
 	destroy_positional_params();
 	destroy_param_map();

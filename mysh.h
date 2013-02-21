@@ -11,10 +11,12 @@
 
 #define mysh_assert assert
 
+#define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
+
 enum token_type {
 	TOK_UNQUOTED_STRING        = 0x1,
-	TOK_SINGLE_QUOTED_STRING   = 0x2,
-	TOK_DOUBLE_QUOTED_STRING   = 0x4,
+	TOK_DOUBLE_QUOTED_STRING   = 0x2,
+	TOK_SINGLE_QUOTED_STRING   = 0x4,
 	TOK_PIPE                   = 0x8,
 	TOK_GREATER_THAN           = 0x10,
 	TOK_LESS_THAN              = 0x20,
@@ -58,24 +60,22 @@ struct redirection {
 	struct list_head list;
 };
 
-struct string {
-	char *chars;
-	size_t len;
-	int flags;
-	struct list_head list;
-};
-
 enum string_flags {
 	STRING_FLAG_UNQUOTED                = 0x1,
 	STRING_FLAG_DOUBLE_QUOTED           = 0x2,
 	STRING_FLAG_SINGLE_QUOTED           = 0x4,
 	STRING_FLAG_PARAM_EXPANDED          = 0x8,
 	STRING_FLAG_PRECEDING_WHITESPACE    = 0x10,
-	STRING_FLAG_WORD_SPLIT              = 0x20,
 	STRING_FLAG_FILENAME_EXPANDED       = 0x40,
 	STRING_FLAG_WAS_PARAM               = 0x100,
 	STRING_FLAG_VAR_ASSIGNMENT          = 0x200,
-	STRING_FLAG_IN_REDIRECTIONS         = 0x400,
+};
+
+struct string {
+	char *chars;
+	size_t len;
+	enum string_flags flags;
+	struct list_head list;
 };
 
 /* mysh_builtin.c */
@@ -142,8 +142,10 @@ enum shell_char_type_flags {
 	(SHELL_NORMAL_PARAM_FIRST_CHAR | SHELL_PARAM_NUMERIC_CHAR)
 
 extern const unsigned char _shell_char_tab[256];
-static inline int
-shell_char_type(char c)
+
+/* Given a character, return a bitmask of flags that describe the meanings that
+ * character has to the shell. */
+static inline int shell_char_type(char c)
 {
 	return (int)_shell_char_tab[(unsigned char)c];
 }

@@ -94,6 +94,14 @@ new_string_with_data(const char *chars, size_t len)
 	return s;
 }
 
+void
+clear_string(struct string *s)
+{
+	free(s->chars);
+	s->chars = NULL;
+	s->len = 0;
+}
+
 /* Frees a string, including the character data */
 void
 free_string(struct string *s)
@@ -102,14 +110,6 @@ free_string(struct string *s)
 		free(s->chars);
 		free(s);
 	}
-}
-
-void
-clear_string(struct string *s)
-{
-	free(s->chars);
-	s->chars = NULL;
-	s->len = 0;
 }
 
 /* Frees a list of strings */

@@ -64,7 +64,7 @@ static int do_export(const char *var)
 	int ret;
 
 	equals = strchr(var, '=');
-	if (equals){ 
+	if (equals) {
 		make_param_assignment(var);
 		*(char*)equals = '\0';
 	}
@@ -239,16 +239,15 @@ static int builtin_setenv(unsigned argc, const char **argv)
 	if (argc < 2) {
 		mysh_error("usage: setenv VARIABLE VALUE");
 		ret = 2;
-		goto out;
-	}
-	if (setenv(argv[0], argv[1], 1) != 0) {
-		mysh_error_with_errno("setenv %s", argv[0]);
-		ret = 1;
 	} else {
-		ret = 0;
-		insert_shell_param(argv[0], argv[1]);
+		if (setenv(argv[0], argv[1], 1)) {
+			mysh_error_with_errno("setenv %s", argv[0]);
+			ret = 1;
+		} else {
+			insert_shell_param(argv[0], argv[1]);
+			ret = 0;
+		}
 	}
-out:
 	return ret;
 }
 
@@ -382,10 +381,10 @@ static int builtin_help(unsigned argc, const char **argv)
  * @builtin:       Pointer to a structure describing which builtin command to
  *                 execute.
  *
- * @command_toks:  List of tokens for the arguments to the builtin, not
+ * @cmd_args:      List of strings for the arguments to the builtin, not
  *                 including the name of the builtin itself.
  *
- * @redirs:        List of tokens for the builtin's redirections.
+ * @redirs:        List of redirections for the builtin.
  *
  * @cmd_nargs:     Number of arguments that the builtin was passed, not
  *                 including the name of the builtin itself.
@@ -418,7 +417,8 @@ static int execute_builtin(const struct builtin *builtin,
 		argv[i] = s->chars;
 	}
 	argv[i] = NULL;
-	/* Call the builtin function */
+
+	/* Call the built-in function */
 	status = builtin->func(cmd_nargs, argv);
 
 	/* Undo redirections for the builtin, unless this was the 'exec' builtin */
@@ -435,9 +435,10 @@ static int execute_builtin(const struct builtin *builtin,
 
 /* Execute a builtin command if the command matches a shell builtin.
  *
- * @command_toks:  List of tokens for the command.
+ * @cmd_args:      List of arguments to the command, including the command
+ *                 name itself.  Cannot be empty.
  *
- * @redirs:        List of tokens for the command's redirections.
+ * @redirs:        List of redirections for the command.
  *
  * @cmd_nargs:     Number of arguments that the command was passed, including
  *                 the first string that gives the name of the program or
@@ -449,21 +450,21 @@ static int execute_builtin(const struct builtin *builtin,
  * Return value:   %true if a builtin was executed; %false if the command
  *                 did not match a shell builtin.
  */
-bool maybe_execute_builtin(const struct list_head *command_toks,
+bool maybe_execute_builtin(const struct list_head *cmd_args,
 			   const struct list_head *redirs,
 			   unsigned cmd_nargs, int *status_ret)
 {
 	const char *name;
 	size_t i;
 
-	if (list_empty(command_toks))
-		return false;
-	name = list_entry(command_toks->next, struct string, list)->chars;
+	mysh_assert(!list_empty(cmd_args));
+	mysh_assert(cmd_nargs == list_size(cmd_args));
+	name = list_entry(cmd_args->next, struct string, list)->chars;
 	for (i = 0; i < NUM_BUILTINS; i++) {
 		if (strcmp(builtins[i].name, name) == 0) {
 			/* The command matched a builtin.  Execute it. */
 			*status_ret = execute_builtin(&builtins[i],
-						      command_toks->next,
+						      cmd_args->next,
 						      redirs, cmd_nargs - 1);
 			return true;
 		}
@@ -474,13 +475,11 @@ bool maybe_execute_builtin(const struct list_head *command_toks,
 
 int set_pwd()
 {
-	const char *setenv_argv[2];
 	char *wd = getcwd(NULL, 0);
 	int ret;
 	if (wd) {
-		setenv_argv[0] = "PWD";
-		setenv_argv[1] = wd;
-		ret = builtin_setenv(2, setenv_argv);
+		const char *setenv_argv[] = {"PWD", wd, NULL};
+		ret = builtin_setenv(ARRAY_SIZE(setenv_argv) - 1, setenv_argv);
 		free(wd);
 	} else {
 		mysh_error("getcwd()");

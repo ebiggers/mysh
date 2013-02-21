@@ -9,6 +9,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <limits.h>
 
 const unsigned char _shell_char_tab[256] = {
 	['A' ... 'Z'] = SHELL_PARAM_ALPHA_CHAR,
@@ -19,11 +20,9 @@ const unsigned char _shell_char_tab[256] = {
 	['*']         = SHELL_PARAM_SPECIAL_CHAR,
 	['#']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_UNQUOTED_SPECIAL,
 	['?']         = SHELL_PARAM_SPECIAL_CHAR,
-	/*['-']         = SHELL_PARAM_SPECIAL_CHAR,*/
 	['$']         = SHELL_PARAM_SPECIAL_CHAR | SHELL_DOUBLE_QUOTE_SPECIAL,
 	['\\']        = SHELL_DOUBLE_QUOTE_SPECIAL | SHELL_UNQUOTED_SPECIAL,
 	['"']         = SHELL_DOUBLE_QUOTE_SPECIAL | SHELL_UNQUOTED_SPECIAL,
-	/*['!']         = SHELL_PARAM_SPECIAL_CHAR,*/
 	['&']         = SHELL_UNQUOTED_SPECIAL,
 	[' ']         = SHELL_LEX_WHITESPACE | SHELL_UNQUOTED_SPECIAL,
 	['\'']        = SHELL_UNQUOTED_SPECIAL,
@@ -52,11 +51,8 @@ const unsigned char _shell_char_tab[256] = {
  *                   by parameter expansion, then the resulting list will remain
  *                   empty.  Otherwise, the string will have one or more strings
  *                   written to it, and they will have the same flags as the
- *                   original string except for the following two exceptions:
- *                     (1) The strings will have STRING_FLAG_WORD_SPLIT set,
- *                         unless the list contains only the original string @s
- *                         (i.e. if word splitting was a no-op).
- *                     (2) All strings except the first will have
+ *                   original string except for the following exceptions:
+ *                         All strings except the first will have
  *                         STRING_FLAG_PRECEDING_WHITESPACE set.  The first will
  *                         have STRING_FLAG_PRECEDING_WHITESPACE set if and only
  *                         if @leading_whitespace is set to %true.
@@ -65,32 +61,27 @@ const unsigned char _shell_char_tab[256] = {
  *                   that indicate whether the character was produced by
  *                   parameter expansion (1) or not (0).
  *
- * @leading_whitespace:
- *                   Set to %true if the string has leading whitespace that was
- *                   produced by parameter expansion; set to %false otherwise.
- *
- * @trailing_whitespace:
- *                   Set to %true if the string has trailing whitespace that was
- *                   produced by parameter expansion; set to %false otherwise.
+ * Returns %true if the string has trailing whitespace that was produced by
+ * parameter expansion; %false otherwise.
  */
-static void
+static bool
 split_string_around_whitespace(struct string *s, struct list_head *out_list,
-			       const unsigned char *param_char_map,
-			       bool *leading_whitespace, bool *trailing_whitespace)
+			       const unsigned char *param_char_map)
 {
 	const char *chars;
 	struct string *s2;
 	size_t i;
+	bool leading_whitespace = false;
+	bool trailing_whitespace = false;
 
 	chars = s->chars;
 	i = 0;
-	*leading_whitespace = false;
 	for (;;) {
 		/* skip leading whitespace produced by parameter expansion  */
 		size_t j = i;
 		while (isspace(chars[i]) && param_char_map[i] != 0) {
 			if (i == 0)
-				*leading_whitespace = true;
+				leading_whitespace = true;
 			i++;
 		}
 
@@ -99,9 +90,9 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 			 * at least 1 parameter-expanded whitespace character at
 			 * the end of the string.  Also, free @s before
 			 * returning, since it's no longer needed. */
-			*trailing_whitespace = (i != j);
+			trailing_whitespace = (i != j);
 			free_string(s);
-			return;
+			break;
 		}
 		/* j is set the index of the next character that is not a
 		 * parameter-expanded whitespace character */
@@ -114,25 +105,24 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 
 		if (j == 0 && i == s->len) {
 			/* Add entire string and return. */
-			*trailing_whitespace = false;
 			list_add_tail(&s->list, out_list);
-			return;
+			trailing_whitespace = false;
+			break;
 		} else {
 			/* Create a new substring and append it to the list of
 			 * split strings.
 			 *
-			 * STRING_FLAG_WORD_SPLIT is set on every new substring.
-			 * STRING_FLAG_PRECEDING_WHITESPACE is set on all
-			 * substrings except the first if it occurs at the very
-			 * beginning of the original string. */
-
+			 * STRING_FLAG_PRECEDING_WHITESPACE is set unless the
+			 * substring occurs at the very beginning of the
+			 * original string with no preceding whitespace. */
 			s2 = new_string_with_data(&chars[j], i - j);
-			s2->flags = s->flags | STRING_FLAG_WORD_SPLIT;
-			if (i != 0)
+			s2->flags = s->flags;
+			if (i != 0 || leading_whitespace)
 				s2->flags |= STRING_FLAG_PRECEDING_WHITESPACE;
 			list_add_tail(&s2->list, out_list);
 		}
 	}
+	return trailing_whitespace;
 }
 
 /* Performs filename expansion on a string using the glob() function.  For
@@ -223,62 +213,50 @@ static int expand_params_and_word_split(struct token *tok,
 					struct list_head *out_list)
 {
 	struct string *s;
-	bool leading_whitespace;
 	unsigned char *param_char_map = NULL;
 
 	mysh_assert(tok->type & TOK_CLASS_STRING);
 	mysh_assert(list_empty(out_list));
 
+	/* Transfer the token ('struct token') to a string ('struct string') */
  	s = xmalloc(sizeof(struct string));
 	s->chars = tok->tok_data;
 	s->len = strlen(tok->tok_data);
-	s->flags = 0;
 	tok->tok_data = NULL;
-	switch (tok->type) {
-	case TOK_UNQUOTED_STRING:
-		s->flags |= STRING_FLAG_UNQUOTED;
-		break;
-	case TOK_DOUBLE_QUOTED_STRING:
-		s->flags |= STRING_FLAG_DOUBLE_QUOTED;
-		break;
-	case TOK_SINGLE_QUOTED_STRING:
-		s->flags |= STRING_FLAG_SINGLE_QUOTED;
-		break;
-	default:
-		break;
-	}
+	BUILD_BUG_ON(TOK_CLASS_STRING != (TOK_UNQUOTED_STRING |
+					  TOK_DOUBLE_QUOTED_STRING |
+					  TOK_SINGLE_QUOTED_STRING));
+	BUILD_BUG_ON((int)TOK_UNQUOTED_STRING != (int)STRING_FLAG_UNQUOTED);
+	BUILD_BUG_ON((int)TOK_DOUBLE_QUOTED_STRING != (int)STRING_FLAG_DOUBLE_QUOTED);
+	BUILD_BUG_ON((int)TOK_SINGLE_QUOTED_STRING != (int)STRING_FLAG_SINGLE_QUOTED);
+	s->flags = (int)tok->type;
+	if (tok->preceded_by_whitespace)
+		s->flags |= STRING_FLAG_PRECEDING_WHITESPACE;
 
 	/* Do parameter expansion on unquoted strings and on double-quoted
 	 * strings */
-	if (tok->type & (TOK_UNQUOTED_STRING | TOK_DOUBLE_QUOTED_STRING))
+	if (s->flags & (STRING_FLAG_UNQUOTED | STRING_FLAG_DOUBLE_QUOTED))
 		s = do_param_expansion(s, &param_char_map);
 
 	/* Do word splitting on unquoted strings that had parameter expansion
 	 * performed */
-	if ((tok->type & TOK_UNQUOTED_STRING) && (s->flags & STRING_FLAG_PARAM_EXPANDED)) {
+	if ((s->flags & (STRING_FLAG_UNQUOTED | STRING_FLAG_PARAM_EXPANDED)) ==
+		        (STRING_FLAG_UNQUOTED | STRING_FLAG_PARAM_EXPANDED))
+	{
 		bool trailing_whitespace;
-		split_string_around_whitespace(s, out_list, param_char_map,
-					       &leading_whitespace,
-					       &trailing_whitespace);
+
+		trailing_whitespace = split_string_around_whitespace(s,
+								     out_list,
+								     param_char_map);
 		/* If there was trailing whitespace as a result of word
 		 * splitting, force @preceded_by_whitespace to true on the next
 		 * token (if there is one) */
 		if (next && trailing_whitespace)
 			next->preceded_by_whitespace = true;
+		free(param_char_map);
 	} else {
 		list_add_tail(&s->list, out_list);
-		leading_whitespace = false;
-	}
-	free(param_char_map);
-	/* If at least one string was produced as a result of word splitting and
-	 * either the original token was preceded by whitespace or there was
-	 * additional preceding whitespace produced by parameter expansion, set
-	 * STRING_FLAG_PRECEDING_WHITESPACE on the first string. */
-	if ((tok->preceded_by_whitespace || leading_whitespace) &&
-	    !list_empty(out_list))
-	{
-		list_entry(out_list->next, struct string, list)->flags |=
-			STRING_FLAG_PRECEDING_WHITESPACE;
+		mysh_assert(param_char_map == NULL);
 	}
 	return 0;
 }
@@ -303,10 +281,9 @@ static int expand_params_and_word_split(struct token *tok,
  * strings replaces the input list.
  *
  * This function also has a special responsibility where it looks for "glued"
- * strings that are constructed from an unquoted string that did not have any
- * parameter expansions that matches the regular expression
- * [A-Za-z_][A-Za-z_0-9]*=.*, followed by zero or more unquoted or quoted
- * strings.  So, for example, 
+ * strings that are constructed from an unquoted string that matches the regular
+ * expression [A-Za-z_][A-Za-z_0-9]*=.*, followed by zero or more unquoted or
+ * quoted strings.  So, for example,
  *   $ a="b"
  *   $ a=b
  *   $ a="b"'c'
@@ -330,13 +307,15 @@ static int glue_strings(struct list_head *string_list)
 			else
 				list_move_tail(&s->list, &glue_list);
 		}
+		/* Detect variable assignments 
+		 * TODO: Somehow make it so that unquoted strings where
+		 * parameter expansion has occurred on the left side of the
+		 * equals sign are not considered variable assignments. */
 		s = list_entry(first, struct string, list);
-		if ((s->flags & STRING_FLAG_UNQUOTED) &&
-		    !(s->flags & STRING_FLAG_PARAM_EXPANDED) &&
+		if (s->flags & STRING_FLAG_UNQUOTED &&
 		    string_matches_param_assignment(s))
-		{
 			flags = STRING_FLAG_VAR_ASSIGNMENT;
-		} else
+		else
 			flags = 0;
 		s = join_strings(&glue_list);
 		s->flags = flags;
@@ -426,7 +405,6 @@ enum redir_spec_number {
  * [N=STDIN_FILENO]<&M
  * dup2(M, N)
  * M may not be preceded by whitespace and cannot expand to more than one string.
- *
  */
 static const struct redir_spec redir_specs[] = {
 	/* [N=STDOUT_FILENO]>FILENAME */
@@ -516,7 +494,8 @@ static int add_redirection(const struct redir_spec *spec,
 	{
 		char *tmp;
 		int left_fd = strtol(left_adjacent_string->chars, &tmp, 10);
-		if (left_fd >= 0 && tmp != left_adjacent_string->chars && !*tmp) {
+		if (left_fd >= 0 && left_fd <= INT_MAX &&
+		    tmp != left_adjacent_string->chars && !*tmp) {
 			redir->dest_fd = left_fd;
 			clear_string(left_adjacent_string);
 		}
@@ -537,9 +516,10 @@ static int add_redirection(const struct redir_spec *spec,
 	if (spec->requires_right_string_is_fd) {
 		char *tmp;
 		int right_fd = strtol(right_string->chars, &tmp, 10);
-		if (right_fd >= 0 && tmp != right_string->chars && !*tmp)
+		if (right_fd >= 0 && right_fd <= INT_MAX &&
+		    tmp != right_string->chars && !*tmp) {
 			redir->src_fd = right_fd;
-		else {
+		} else {
 			mysh_error("expected valid file descriptor "
 				   "after redirection operator");
 			ret = -1;
@@ -547,7 +527,7 @@ static int add_redirection(const struct redir_spec *spec,
 		}
 		redir->is_file = false;
 	} else {
-		redir->src_filename = right_string->chars; // XXX
+		redir->src_filename = right_string->chars;
 		right_string->chars = NULL;
 		right_string->len = 0;
 		redir->open_flags = spec->open_flags;
@@ -574,6 +554,24 @@ static void add_stderr_to_stdout_redirection(struct list_head *redirs)
 	list_add_tail(&redir->list, redirs);
 }
 
+/* Parse all the different redirection operators:
+ *
+ * [N]>FILENAME
+ * [N]>>FILENAME
+ * &>FILENAME
+ * &>>FILENAME
+ * [N]>&M
+ * [N]<FILENAME
+ * [N]<&M
+ *
+ * To make the code just a bit more managable, each different type of
+ * redirection is represented by an entry in the @redir_specs table.  So, the
+ * function below determines the redirection type, then it passes control to a
+ * generic function add_redirection() to handle the specific redirection based
+ * on the redir_spec as well as additional information, such as whether there is
+ * a preceding string directly adjacent to the redirection operator that could
+ * be interpreted as the N token in one of the above redirections.
+ */
 static int parse_next_redirection(struct list_head *toks,
 				  struct string *prev_string,
 				  struct list_head *redirs,
@@ -721,6 +719,24 @@ out_syntax_error:
 	goto out_error;
 }
 
+/*
+ * Parse redirections.
+ *
+ * @toks:       List of remaining tokens in the pipeline component (after the
+ *              command arguments)
+ *
+ * @cmd_args:   List of strings of command arguments.  This is only needed so
+ *              that the last one can be removed if it's actually part of a
+ *              redirection like 1>&2. 
+ *
+ * @redirs:     Empty list to which the redirections will be appended.
+ *
+ * @async_ret:  If non-NULL, write %true to this location if the redirections
+ *              are followed by a lone '&' token.  If NULL, do not allow a
+ *              trailing '&' token.
+ *
+ * Returns 0 on success; -1 on parse error.
+ */
 static int parse_redirections(struct list_head *toks,
 			      struct list_head *cmd_args,
 			      struct list_head *redirs,
@@ -729,7 +745,7 @@ static int parse_redirections(struct list_head *toks,
 	struct string *prev_string;
 	int ret = 0;
 
-	/* Set prev_string by following a string from the cmd_args list. */
+	/* Set prev_string by borrowing a string from the cmd_args list. */
 	bool prev_string_is_borrowed = true;
 	if (!list_empty(cmd_args))
 		prev_string = list_entry(cmd_args->prev, struct string, list);
@@ -816,17 +832,17 @@ int parse_tok_list(struct list_head *toks,
 	list_for_each_entry_safe(tok, tmp, toks, list) {
 		if (!(tok->type & TOK_CLASS_STRING))
 			break;
-		LIST_HEAD(tmp_list);
 		if (tok->list.next == toks)
 			next = NULL;
 		else
 			next = list_entry(tok->list.next, struct token, list);
+		LIST_HEAD(tmp_list);
 		ret = expand_params_and_word_split(tok, next, &tmp_list);
 		if (ret)
 			goto out_free_string_list;
 		list_splice_tail(&tmp_list, &string_list);
 		list_del(&tok->list);
-		free(tok->tok_data);
+		mysh_assert(tok->tok_data == NULL);
 		free(tok);
 	}
 

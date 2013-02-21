@@ -26,16 +26,7 @@ struct param_trie_node {
 
 static struct param_trie_node param_trie_root;
 
-static struct param_trie_node *
-new_trie_node()
-{
-	return xzalloc(sizeof(struct param_trie_node));
-}
-
-
-extern char **environ;
-
-static char trie_slot_tab[256];
+static char trie_char_to_slot_tab[256];
 static char trie_slot_to_char_tab[NUM_SHELL_PARAM_VALID_CHARS];
 
 static const unsigned char trie_slot_ranges[][2] = {
@@ -46,19 +37,20 @@ static const unsigned char trie_slot_ranges[][2] = {
 };
 
 /* Initialize a table to map from the %NUM_SHELL_PARAM_VALID_CHARS allowed shell
- * variable characters to a numbering [0, %NUM_SHELL_PARAM_VALID_CHARS - 1]. */
-static void init_trie_slot_tab()
+ * variable characters to a numbering [0, %NUM_SHELL_PARAM_VALID_CHARS - 1], as
+ * well as a table to do the reverse mapping. */
+static void init_trie_slot_tabs()
 {
 	unsigned i, n;
 	for (i = 0; i < 256; i++)
-		trie_slot_tab[i] = -1;
+		trie_char_to_slot_tab[i] = -1;
 	n = 0;
 	for (i = 0; i < ARRAY_SIZE(trie_slot_ranges); i++) {
 		unsigned char range_begin = trie_slot_ranges[i][0];
 		unsigned char range_end = trie_slot_ranges[i][1];
 		unsigned char c;
 		for (c = range_begin; c <= range_end; c++) {
-			trie_slot_tab[c] = n;
+			trie_char_to_slot_tab[c] = n;
 			trie_slot_to_char_tab[n] = c;
 			n++;
 		}
@@ -68,8 +60,8 @@ static void init_trie_slot_tab()
 
 static int trie_get_slot(char c)
 {
-	mysh_assert(trie_slot_tab['z'] != 0);
-	return (int)trie_slot_tab[(unsigned char)c];
+	mysh_assert(trie_char_to_slot_tab['z'] != 0); /* init_trie_slot_tabs() has been run */
+	return (int)trie_char_to_slot_tab[(unsigned char)c];
 }
 
 
@@ -85,12 +77,12 @@ static void insert_param(struct param_trie_node *node,
 {
 	while (len--) {
 		int slot = trie_get_slot(*name++);
-		if (slot < 0)
-			return;
+		mysh_assert(slot >= 0 && slot < ARRAY_SIZE(node->children));
 		if (!node->children[slot]) {
-			node->children[slot] = new_trie_node();
+			node->children[slot] = xzalloc(sizeof(struct param_trie_node));
 			node->children[slot]->parent = node;
 			node->children[slot]->parent_child_ptr = &node->children[slot];
+			mysh_assert(node->num_children < ARRAY_SIZE(node->children));
 			node->num_children++;
 		}
 		node = node->children[slot];
@@ -106,6 +98,7 @@ static void insert_param(struct param_trie_node *node,
 		if (parent) {
 			free(node);
 			*parent_child_ptr = NULL;
+			mysh_assert(parent->num_children > 0);
 			parent->num_children--;
 		} else {
 			break;
@@ -127,8 +120,8 @@ void insert_shell_param(const char *name, const char *value)
 void make_param_assignment(const char *assignment)
 {
 	const char *equals = strchr(assignment, '=');
-	mysh_assert(equals != NULL);
-	insert_shell_param_len(assignment, equals - assignment, equals + 1);
+	if (equals)
+		insert_shell_param_len(assignment, equals - assignment, equals + 1);
 }
 
 /* Export a shell variable into the environment.
@@ -144,7 +137,7 @@ int export_variable(const char *name)
 	else
 		ret = unsetenv(name);
 	if (ret)
-		mysh_error_with_errno("export_variable()");
+		mysh_error_with_errno("can't export variable %s", name);
 	return ret;
 }
 
@@ -152,21 +145,11 @@ int export_variable(const char *name)
 void init_param_map()
 {
 	char **env_p;
-	const char *name;
+	extern char **environ;
 
-	init_trie_slot_tab();
-	for (env_p = environ; (name = *env_p) != NULL; env_p++) {
-		const char *equals;
-		const char *value;
-		size_t len;
-
-		equals = strchr(name, '=');
-		if (equals) {
-			value = equals + 1;
-			len = equals - name;
-			insert_param(&param_trie_root, name, len, xstrdup(value));
-		}
-	}
+	init_trie_slot_tabs();
+	for (env_p = environ; *env_p != NULL; env_p++)
+		make_param_assignment(*env_p);
 }
 
 static void free_param_trie(struct param_trie_node *node)
@@ -177,9 +160,12 @@ static void free_param_trie(struct param_trie_node *node)
 			free_param_trie(node->children[i]);
 			free(node->children[i]->value);
 			free(node->children[i]);
+			node->children[i] = NULL;
+			mysh_assert(node->num_children > 0);
+			node->num_children--;
 		}
 	}
-	memset(node, 0, sizeof(node));
+	mysh_assert(node->num_children == 0);
 
 }
 
@@ -216,8 +202,7 @@ lookup_shell_param_len(const char *name, size_t len)
 	struct param_trie_node *node = &param_trie_root;
 	while (len--) {
 		int slot = trie_get_slot(*name++);
-		if (slot < 0)
-			return NULL;
+		mysh_assert(slot >= 0 && slot < ARRAY_SIZE(node->children));
 		node = node->children[slot];
 		if (!node)
 			return NULL;
@@ -382,9 +367,9 @@ append_param(const char *name, size_t len, struct list_head *out_list)
  *                   pointer to a map from character indices to boolean values
  *                   indicating whether the corresponding character was produced
  *                   by parameter expansion (1) or was present in the original
- *                   string (0).  If parameter expansion was not performed or
- *                   the string expanded to length 0, NULL will be written into
- *                   the location instead.
+ *                   string (0).  If parameter expansion was not performed,
+ *                   the string expanded to length 0, or the string was not
+ *                   quoted, NULL will be written into this location instead.
  *
  * The return value is the expanded string.  The caller is responsible for its
  * memory; the caller is no longer responsible for the memory for @s, which is
@@ -398,18 +383,20 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 	const char *var_begin;
 	const char *dollar_sign;
 	const char *var_end;
+	const char *scan_next;
 	unsigned char mask;
 	unsigned char char_type;
 	struct string *tmp;
 	size_t len;
 	struct list_head string_list;
+	bool bracketed;
 
+	*param_char_map = NULL;
 	var_end = s->chars;
 	dollar_sign = strchr(var_end, '$');
-	if (!dollar_sign || *(dollar_sign + 1) == '\0') { 
+	if (!dollar_sign || *(dollar_sign + 1) == '\0') {
 		/* No parameter expansion to be done.
 		 * Return the original string. */
-		*param_char_map = NULL; 
 		return s;
 	}
 
@@ -423,7 +410,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 		/* Append the literal characters (if any) from after the end of
 		 * the previous variable (or the beginning of the string) up
 		 * until the dollar sign. */
-		if (dollar_sign != var_end)
+		if (dollar_sign > var_end)
 			append_string(var_end, dollar_sign - var_end, &string_list);
 
 		/* Parse the parameter name.  There are several cases; for
@@ -433,10 +420,14 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 		 * or closing '}'.  Any invalid sequences, such as the missing
 		 * closing '}', are just output literally. */
 		var_begin = dollar_sign + 1;
+		if (*var_begin == '{') {
+			bracketed = true;
+			var_begin++;
+		} else
+			bracketed = false;
 		var_end = var_begin;
-		if (*var_end == '{')
-			var_end++;
 		char_type = shell_char_type(*var_end);
+		mysh_assert(shell_char_type('$') & SHELL_PARAM_SPECIAL_CHAR);
 		if (char_type & (SHELL_NORMAL_PARAM_CHAR |
 				 SHELL_PARAM_SPECIAL_CHAR))
 		{
@@ -453,30 +444,36 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 			do {
 				var_end++;
 			} while (shell_char_type(*var_end) & mask);
-			if (*var_end == '}') {
-				if (*var_begin == '{') {
-					var_begin++;
-					var_end++;
-				}
+			if (bracketed && *var_end != '}') {
+				/* Missing closing brace */
+
+				/* Set var_end to point to dollar sign so it's
+				 * output literally */
+				var_end = var_begin - 2;
+				/* Start scanning at the ? in ${?.  So,
+				 * "${$HOME" will expand $HOME. */
+				scan_next = var_begin;
 			} else {
-				if (*var_begin == '{') {
-					/* missing closing brace */
-					var_end = var_begin;
-				}
-			}
-			/* The parameter name (or special character, or
-			 * positional parameter) begins at var_begin and
-			 * continues for (var_end - var_begin characters).  Look
-			 * it up and append it to the string list. */
-			if (var_end - var_begin != 0)
+				/* The parameter name (or special character, or
+				 * positional parameter) begins at var_begin and
+				 * continues for (var_end - var_begin)
+				 * characters.  Look it up and append it to the
+				 * string list. */
 				append_param(var_begin, var_end - var_begin,
 					     &string_list);
+				if (bracketed)
+					++var_end;
+				scan_next = var_end;
+			}
+		} else {
+			scan_next = var_end + 1;
+			var_end = dollar_sign;
 		}
-	} while ((dollar_sign = strchr(var_end, '$')) && *(dollar_sign + 1) != '\0');
+	} while ((dollar_sign = strchr(scan_next, '$')) && *(dollar_sign + 1) != '\0');
 
 	/* Append any remaining literal characters */
 	if (*var_end)
-		append_string(var_end, strlen(var_end), &string_list);
+		append_string(var_end, s->len - (var_end - s->chars), &string_list);
 
 	/* Sum the total length of the expanded string */
 	len = 0;
@@ -488,7 +485,6 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 		free_string_list(&string_list);
 		s->len = 0;
 		s->chars[0] = '\0';
-		*param_char_map = NULL;
 	} else {
 		/* The expansions produced one or more strings, which now need
 		 * to be joined.  The original string that was passed in must be
@@ -498,16 +494,18 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
 
 		flags = s->flags;
 		free_string(s);
-		*param_char_map = xzalloc(len);
-		pos = 0;
-		list_for_each_entry(tmp, &string_list, list) {
-			if (tmp->flags & STRING_FLAG_WAS_PARAM) {
-				size_t i;
-				for (i = 0; i < tmp->len; i++)
-					(*param_char_map)[pos + i] = 1;
-			}
-			pos += tmp->len;
+		if (flags & STRING_FLAG_UNQUOTED) {
+			*param_char_map = xzalloc(len);
+			pos = 0;
+			list_for_each_entry(tmp, &string_list, list) {
+				if (tmp->flags & STRING_FLAG_WAS_PARAM) {
+					size_t i;
+					for (i = 0; i < tmp->len; i++)
+						(*param_char_map)[pos + i] = 1;
+				}
+				pos += tmp->len;
 
+			}
 		}
 		s = join_strings(&string_list);
 		s->flags = flags;
