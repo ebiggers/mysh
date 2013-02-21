@@ -270,8 +270,8 @@ followed by a space and the '$' character.
 Startup files
 =============
 
-The shell will not automatically execute commands from files like /etc/profile
-when it starts up.
+The shell will automatically execute commands from $HOME/.myshrc when it starts
+up.
 
 Exit status
 ===========

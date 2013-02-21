@@ -101,6 +101,8 @@ extern int mysh_last_background_pid;
 
 extern int read_loop(int in_fd, bool interactive);
 extern int execute_full_shell_input(const char *input, size_t len);
+extern int do_source(const char *filename, unsigned nargs,
+		     const char * const *args);
 
 /* mysh_param.c */
 extern struct string *
@@ -108,7 +110,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map);
 
 extern const char *lookup_param(const char *name, size_t len);
 extern void set_positional_params(int num_params, const char *param0,
-				  const char **params);
+				  const char * const *params);
 extern void init_param_map();
 extern const char *lookup_shell_param(const char *name);
 extern const char *lookup_shell_param_len(const char *name, size_t len);

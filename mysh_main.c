@@ -315,6 +315,15 @@ static int execute_pipeline(struct list_head command_tokens[],
 			mysh_error_with_errno("can't fork child process");
 			goto out_close_pipes;
 		} else if (ret == 0) {
+			if (async) {
+				errno = 0;
+				setsid();
+				dup2(open("/dev/null", O_RDONLY), STDIN_FILENO);
+				if (errno) {
+					mysh_error_with_errno("problem daemonizing "
+							      "background process");
+				}
+			}
 			/* Child: set up redirections and execute new process */
 			start_child(&cmd_arg_lists[i],
 				    &redir_lists[i],
@@ -624,6 +633,44 @@ out_break_read_loop:
 	return mysh_last_exit_status;
 }
 
+/* Source a shell script. */
+int do_source(const char *filename, unsigned nargs, const char * const *args)
+{
+	int in_fd;
+	char **pos_params_save;
+	unsigned num_pos_params_save;
+	int ret;
+
+	in_fd = open(filename, O_RDONLY);
+	if (in_fd < 0) {
+		mysh_error_with_errno("can't open %s", filename);
+		return 1;
+	}
+
+	pos_params_save = positional_parameters;
+	num_pos_params_save = num_positional_parameters;
+	positional_parameters = NULL;
+	set_positional_params(nargs, filename, (const char **)args);
+	ret = read_loop(in_fd, false);
+	destroy_positional_params();
+	positional_parameters = pos_params_save;
+	num_positional_parameters = num_pos_params_save;
+	return ret;
+}
+
+static void source_myshrc()
+{
+	/* source $HOME/.myshrc */
+	char *home = getenv("HOME");
+	if (home) {
+		size_t len = strlen(home);
+		char filename[len + sizeof("/.myshrc")];
+		stpcpy(filename, home);
+		strcat(filename, "/.myshrc");
+		do_source(filename, 0, NULL);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int c;
@@ -658,6 +705,7 @@ int main(int argc, char **argv)
 	argc -= optind;
 	argv += optind;
 
+	source_myshrc();
 	(void)set_pwd();
 
 	if (argc && !from_stdin) {

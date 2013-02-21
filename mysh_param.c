@@ -530,7 +530,7 @@ do_param_expansion(struct string *s, unsigned char **param_char_map)
  * @params:      Array of length @num_params that gives the positional
  *               parameters $1, $2, ... $@num_params. */
 void set_positional_params(int num_params, const char *param0,
-			   const char **params)
+			   const char * const *params)
 {
 	unsigned i;
 	destroy_positional_params();
