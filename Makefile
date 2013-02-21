@@ -9,8 +9,9 @@ EXE     := mysh
 $(EXE):$(OBJ)
 	$(CC) -o $@ $(CFLAGS) $+
 
-$(OBJ): mysh.h
-
+$(OBJ): $(HEADERS)
 
 clean:
 	rm -f $(EXE) $(OBJ)
+
+.PHONY: clean
