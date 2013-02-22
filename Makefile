@@ -1,7 +1,9 @@
 
-SHELL := bash
-
-WITH_READLINE := $(shell if [ -e /usr/include/readline ]; then echo yes; else echo no; fi )
+WITH_READLINE := $(shell if [ -e /usr/include/readline ]; \
+				then echo yes; \
+			 else \
+			 	echo no; \
+			 fi )
 
 ifeq ($(WITH_READLINE),yes)
 READLINE_CPPFLAGS := -DWITH_READLINE
