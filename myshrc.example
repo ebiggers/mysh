@@ -1,6 +1,6 @@
 #
 # ~/.myshrc
-# This file is sourced my 'mysh' when it starts up.
+# This file is sourced by 'mysh' when it starts up.
 #
 
 # Set up LS_COLORS to get good colored output from 'ls'.

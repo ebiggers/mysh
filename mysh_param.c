@@ -71,13 +71,13 @@ static int trie_get_slot(char c)
 }
 
 
-static bool node_has_no_values(const struct param_trie_node *node)
+static bool node_has_values(const struct param_trie_node *node)
 {
 	int i;
 	for (i = 0; i < NUM_VALUES; i++)
 		if (node->values[i])
-			return false;
-	return true;
+			return true;
+	return false;
 }
 
 /* Set or unset a shell variable.
@@ -116,7 +116,7 @@ do_insert_shell_variable(struct param_trie_node *node,
 
 	/* If we unset a parameter by inserting NULL, walk up the free and free
 	 * any nodes that aren't needed anymore. */
-	while (node_has_no_values(node) && node->num_children == 0) {
+	while (!node_has_values(node) && node->num_children == 0) {
 		struct param_trie_node **parent_child_ptr = node->parent_child_ptr;
 		struct param_trie_node *parent = node->parent;
 		if (parent) {
