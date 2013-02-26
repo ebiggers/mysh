@@ -44,9 +44,12 @@ static int builtin_dummy(unsigned argc, const char **argv)
 
 static int do_alias(const char *alias)
 {
-	const char *equals = strchr(alias, '=');
-	if (equals)
-		insert_alias_len(alias, equals - alias, equals + 1);
+	const char *equals;
+	equals = strchr(alias, '=');
+	if (!equals || !insert_alias_len(alias, equals - alias, equals + 1)) {
+		mysh_error("alias: invalid argument \"%s\"", alias);
+		return 1;
+	}
 	return 0;
 }
 
@@ -56,6 +59,13 @@ static int builtin_alias(unsigned argc, const char **argv)
 	while (argc--)
 		ret |= do_alias(*argv++);
 	return ret;
+}
+
+static int builtin_unalias(unsigned argc, const char **argv)
+{
+	while (argc--)
+		insert_alias(*argv++, NULL);
+	return 0;
 }
 
 /* Replace the shell process */
@@ -332,22 +342,23 @@ static int builtin_help(unsigned argc, const char **argv);
 
 /* Table of builtins recognized by the shell */
 static const struct builtin builtins[] = {
-	{".",      builtin_source, ". filename [arguments ...]"},
-	{":",      builtin_dummy,  ":"},
-	{"alias",  builtin_alias,  "alias name=value..."},
-	{"cd",     builtin_cd,     "cd [DIR]"},
-	{"eval",   builtin_eval,   "eval [arg ...]"},
-	{"exec",   builtin_exec,   "exec [command [arguments ...]]"},
-	{"exit",   builtin_exit,   "exit [STATUS]"},
-	{"export", builtin_export, "export VARIABLE[=VALUE] ..."},
-	{"getenv", builtin_getenv, "getenv [VARIABLE]"},
-	{"help",   builtin_help,   "help [COMMAND]"},
-	{"pwd",    builtin_pwd,    "pwd"},
-	{"set",    builtin_set,    "set [[-+]efnv] [--] [arg ...]"},
-	{"setenv", builtin_setenv, "setenv VARIABLE [VALUE]"},
-	{"shift",  builtin_shift,  "shift [N]"},
-	{"source", builtin_source, "source filename [arguments ...]"},
-	{"unset",  builtin_unset,  "unset [name ...]"},
+	{".",       builtin_source,  ". filename [arguments ...]"},
+	{":",       builtin_dummy,   ":"},
+	{"alias",   builtin_alias,   "alias [name=value]..."},
+	{"cd",      builtin_cd,      "cd [DIR]"},
+	{"eval",    builtin_eval,    "eval [arg ...]"},
+	{"exec",    builtin_exec,    "exec [command [arguments ...]]"},
+	{"exit",    builtin_exit,    "exit [STATUS]"},
+	{"export",  builtin_export,  "export VARIABLE[=VALUE] ..."},
+	{"getenv",  builtin_getenv,  "getenv [VARIABLE]"},
+	{"help",    builtin_help,    "help [COMMAND]"},
+	{"pwd",     builtin_pwd,     "pwd"},
+	{"set",     builtin_set,     "set [[-+]efnv] [--] [arg ...]"},
+	{"setenv",  builtin_setenv,  "setenv VARIABLE [VALUE]"},
+	{"shift",   builtin_shift,   "shift [N]"},
+	{"source",  builtin_source,  "source filename [arguments ...]"},
+	{"unalias", builtin_unalias, "unalias [name ...]"},
+	{"unset",   builtin_unset,   "unset [name ...]"},
 };
 
 #define NUM_BUILTINS ARRAY_SIZE(builtins)

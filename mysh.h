@@ -96,6 +96,7 @@ extern int lex_next_token(const char *p, size_t *bytes_remaining_p,
 /* mysh_main.c */
 extern int mysh_last_exit_status;
 extern int mysh_filename_expansion_disabled;
+extern int mysh_alias_expansion_disabled;
 extern int mysh_exit_on_error;
 extern int mysh_write_input_to_stderr;
 extern int mysh_noexecute;
@@ -110,25 +111,30 @@ extern int do_source(const char *filename, unsigned nargs,
 extern struct string *
 do_param_expansion(struct string *s, unsigned char **param_char_map);
 
-extern const char *lookup_param(const char *name, size_t len);
-extern void set_positional_params(int num_params, const char *param0,
-				  const char * const *params);
 extern void init_param_map();
+
+extern const char *lookup_param(const char *name, size_t len);
 extern const char *lookup_shell_param(const char *name);
 extern const char *lookup_shell_param_len(const char *name, size_t len);
 extern const char *lookup_alias_len(const char *name, size_t len);
 extern const char *lookup_alias(const char *name);
 
-extern void insert_shell_param(const char *name, const char *value);
-extern int export_variable(const char *name);
-extern void insert_shell_param_len(const char *name, size_t len,
+extern bool insert_shell_param_len(const char *name, size_t len,
 				   const char *value);
-extern void insert_alias_len(const char *name, size_t len, const char *value);
+extern bool insert_shell_param(const char *name, const char *value);
+
+extern bool insert_alias_len(const char *name, size_t len, const char *value);
+extern bool insert_alias(const char *name, const char *value);
+
+extern int export_variable(const char *name);
 extern void make_param_assignment(const char *assignment);
 extern bool string_matches_param_assignment(const struct string *s);
+extern int print_all_shell_variables();
+
+extern void set_positional_params(int num_params, const char *param0,
+				  const char * const *params);
 extern void destroy_positional_params();
 extern void destroy_param_map();
-extern int print_all_shell_variables();
 
 extern char *all_positional_params;
 extern char **positional_parameters;

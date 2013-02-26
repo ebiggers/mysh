@@ -86,14 +86,21 @@ static bool node_has_no_values(const struct param_trie_node *node)
  * @name:  Name of the variable to insert.
  * @len:   Length of the name of the variable to insert.
  * @value: null-terminated value of the variable, or NULL to unset the variable.
+ * @value_idx:  PARAM_VALUE if inserting a normal shell variable; ALIAS_VALUE
+ * 		if inserting a shell alias.
+ *
+ * Returns true if the variable was successfully inserted; false if the name
+ * contained invalid characters.
  */
-static void insert_variable(struct param_trie_node *node,
+static bool insert_variable(struct param_trie_node *node,
 			    const char *name, size_t len, char *value,
 			    int value_idx)
 {
 	while (len--) {
 		int slot = trie_get_slot(*name++);
-		mysh_assert(slot >= 0 && slot < ARRAY_SIZE(node->children));
+		if (slot < 0)
+			return false;
+		mysh_assert(slot < ARRAY_SIZE(node->children));
 		if (!node->children[slot]) {
 			node->children[slot] = xzalloc(sizeof(struct param_trie_node));
 			node->children[slot]->parent = node;
@@ -121,21 +128,27 @@ static void insert_variable(struct param_trie_node *node,
 		}
 		node = parent;
 	}
+	return true;
 }
 
-void insert_shell_param_len(const char *name, size_t len, const char *value)
+bool insert_shell_param_len(const char *name, size_t len, const char *value)
 {
-	insert_variable(&param_trie_root, name, len, xstrdup(value), PARAM_VALUE);
+	return insert_variable(&param_trie_root, name, len, xstrdup(value), PARAM_VALUE);
 }
 
-void insert_shell_param(const char *name, const char *value)
+bool insert_shell_param(const char *name, const char *value)
 {
-	insert_shell_param_len(name, strlen(name), value);
+	return insert_shell_param_len(name, strlen(name), value);
 }
 
-void insert_alias_len(const char *name, size_t len, const char *value)
+bool insert_alias_len(const char *name, size_t len, const char *value)
 {
-	insert_variable(&param_trie_root, name, len, xstrdup(value), ALIAS_VALUE);
+	return insert_variable(&param_trie_root, name, len, xstrdup(value), ALIAS_VALUE);
+}
+
+bool insert_alias(const char *name, const char *value)
+{
+	return insert_alias_len(name, strlen(name), value);
 }
 
 void make_param_assignment(const char *assignment)
@@ -212,6 +225,23 @@ bool string_matches_param_assignment(const struct string *s)
 }
 
 
+/* Looks up a shell variable that is not a positional parameter or special
+ * variable.  Note that this finds environmental variables as well, provided
+ * that they have been inserted as shell variables with init_param_map().
+ *
+ * @name:  The name of the variable to look up.
+ * @len:   The length of the name of the variable.
+ * @value_idx:  PARAM_VALUE if we are to look up a normal shell variable;
+ * 		ALIAS_VALUE if we are to look up an alias.  Note that these are
+ * 		separate values; for example, you can do:
+ *
+ * 		$ l=val
+ * 		$ alias l=ls
+ *
+ * 		to assign "l" a meaning as both a normal shell variable and an
+ * 		alias.
+ *
+ * Returns the value of the variable if it's set; otherwise, NULL.  */
 const char *
 do_lookup_shell_variable(const char *name, size_t len, int value_idx)
 {
@@ -228,14 +258,6 @@ do_lookup_shell_variable(const char *name, size_t len, int value_idx)
 	return node->values[value_idx];
 }
 
-/* Looks up a shell variable that is not a positional parameter or special
- * variable.  Note that this finds environmental variables as well, provided
- * that they have been inserted as shell variables with init_param_map().
- *
- * @name:  The name of the variable to look up.
- * @len:   The length of the name of the variable.
- *
- * Returns the value of the variable if it's set; otherwise, NULL.  */
 const char *
 lookup_shell_param_len(const char *name, size_t len)
 {

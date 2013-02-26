@@ -43,7 +43,7 @@ Asynchronous commands
 Follow a pipeline with the '&' character to execute it asynchronously.  Its job
 number and the pid of the last command in the pipeline will be printed.
 Multiple concurrent background pipelines are supported.  The shell will check if
-any background pipelines have terminated after each additional line of input,
+any background pipelines have terminated after each additional line of input
 and will print their job numbers and pids again if so.  Real job control is not
 supported, so you cannot actually refer to background pipelines by their job
 numbers.
@@ -201,9 +201,11 @@ Control statements such as 'if', 'for', and 'case' are not supported.
 Functions and aliases
 =====================
 
-Shell functions are not supported.  Aliases are partially supported (make them
-with the 'alias' builtin).  There are some limitations; for example, aliases are
-not expanded recursively.
+Shell functions are not supported.  Aliases are partially supported; make them
+with the 'alias' builtin.  There are some limitations; for example, aliases are
+not expanded recursively.  Alias are only expanded in interactive mode (this is
+the correct behavior and not a limitation.)  You can remove aliases using the
+'unalias' builtin.
 
 Command expansion
 =================
@@ -241,6 +243,7 @@ Some builtins have been described already.  The full list of builtins is:
 
 . filename [arguments ...]
 :
+alias [name=value ...]
 cd [DIR]
 eval [arg ...]
 exec [command [arguments ...]]
@@ -249,10 +252,11 @@ export VARIABLE[=VALUE] ...
 getenv [VARIABLE]
 help [COMMAND]
 pwd
-set [(-+)fev] [--] [arg ...]
+set [(-+)efnv] [--] [arg ...]
 setenv VARIABLE [VALUE]
 shift [N]
 source filename [arguments ...]
+unalias [name ...]
 unset [name ...]
 
 Limitation: the output from a builtin currently cannot be piped into another
@@ -269,37 +273,39 @@ used.
 Command prompt
 ==============
 
-The command prompt is hardcoded as the absolute path to the working directory,
-followed by a space and the '$' character.
+The command prompt is hardcoded as '$' and cannot be changed.
 
 Startup files
 =============
 
 The shell will automatically execute commands from $HOME/.myshrc when it starts
-up.
-
-Exit status
-===========
-
-The exit status of the shell is the exit status of the last command executed, 1
-if the system ran out of memory, -1 if there was a parse error, or 2 if the
-shell could not understand its command line options, or 0 if the input to the
-shell was empty or consisted only of whitespace and comments.
+up.  There is no difference between "login" shells and "nonlogin" shells.
 
 Signals
 =======
 
 SIGINT (send with Ctrl-C) is passed on to child processes running in the
-foreground, if any; it will otherwise discard the current line of input.
+foreground, if any; otherwise it will cause the current line of input to be
+discarded.
 
 SIGSTOP (Ctrl-Z) is not implemented.
+
+Exit status
+===========
+
+The exit status of the shell is the exit status of the last command executed, 1
+if the system ran out of memory, -1 if there was a parse error, 2 if the shell
+could not understand its command line options, or 0 if the input to the shell
+was empty or consisted only of whitespace and comments.
 
 Implementation details
 ======================
 
-External commands are executed using fork() and execpe().
+External commands are executed using fork() and execpe().  There is no caching
+of command locations, so execpe() will linearly search the entire PATH every
+time a command is executed.
 
-Pipes are created using pipe().
+Pipes are created using pipe() and inherited by forked children.
 
 The code to parse the shell input is all manually written (as opposed to using
 flex and bison).  This probably would make it more difficult to implement
@@ -310,7 +316,8 @@ Shell variables are kept in a prefix tree (trie) rather than a hash table.
 Input to the shell is read using read() because lines may be of unlimited
 length, and a shell statement need not correspond to one line of input--- so
 there's little reason to insist on always reading one line at a time.  (Note:
-this doesn't really make any difference if the shell is used interactively.)
+this doesn't really make any difference if the shell is used interactively.
+Also, interactive mode will use readline() if support is compiled in.)
 
 New builtin commands can be added fairly easily by implementing the builtin
 function and adding an entry to the 'builtins' table in mysh_builtin.c.

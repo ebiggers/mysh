@@ -853,7 +853,7 @@ int parse_tok_list(struct list_head *toks,
 	mysh_assert(list_empty(redirs));
 	LIST_HEAD(string_list);
 
-	if (!list_empty(toks)) {
+	if (!mysh_alias_expansion_disabled && !list_empty(toks)) {
 		tok = list_entry(toks->next, struct token, list);
 		expand_alias(tok);
 	}

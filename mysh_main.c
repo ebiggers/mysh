@@ -24,6 +24,7 @@
 /* globals */
 int mysh_last_exit_status;
 int mysh_filename_expansion_disabled;
+int mysh_alias_expansion_disabled;
 int mysh_exit_on_error;
 int mysh_write_input_to_stderr;
 int mysh_noexecute;
@@ -624,6 +625,9 @@ int read_loop(int in_fd, bool interactive)
 	size_t input_buf_len;
 	int ret;
 	struct list_head cur_tok_list;
+	int orig_alias_expansion_disabled = mysh_alias_expansion_disabled;
+
+	mysh_alias_expansion_disabled = !interactive;
 
 	input_buf_len = DEFAULT_INPUT_BUFSIZE;
 	input_buf = xmalloc(input_buf_len);
@@ -816,6 +820,7 @@ int read_loop(int in_fd, bool interactive)
 out_break_read_loop:
 	close(in_fd);
 	free(input_buf);
+	mysh_alias_expansion_disabled = orig_alias_expansion_disabled;
 	return mysh_last_exit_status;
 }
 
