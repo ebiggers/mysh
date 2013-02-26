@@ -92,9 +92,10 @@ static bool node_has_no_values(const struct param_trie_node *node)
  * Returns true if the variable was successfully inserted; false if the name
  * contained invalid characters.
  */
-static bool insert_variable(struct param_trie_node *node,
-			    const char *name, size_t len, char *value,
-			    int value_idx)
+static bool
+do_insert_shell_variable(struct param_trie_node *node,
+			 const char *name, size_t len, char *value,
+			 int value_idx)
 {
 	while (len--) {
 		int slot = trie_get_slot(*name++);
@@ -133,7 +134,8 @@ static bool insert_variable(struct param_trie_node *node,
 
 bool insert_shell_param_len(const char *name, size_t len, const char *value)
 {
-	return insert_variable(&param_trie_root, name, len, xstrdup(value), PARAM_VALUE);
+	return do_insert_shell_variable(&param_trie_root, name,
+					len, xstrdup(value), PARAM_VALUE);
 }
 
 bool insert_shell_param(const char *name, const char *value)
@@ -143,7 +145,8 @@ bool insert_shell_param(const char *name, const char *value)
 
 bool insert_alias_len(const char *name, size_t len, const char *value)
 {
-	return insert_variable(&param_trie_root, name, len, xstrdup(value), ALIAS_VALUE);
+	return do_insert_shell_variable(&param_trie_root, name,
+					len, xstrdup(value), ALIAS_VALUE);
 }
 
 bool insert_alias(const char *name, const char *value)
@@ -242,15 +245,15 @@ bool string_matches_param_assignment(const struct string *s)
  * 		alias.
  *
  * Returns the value of the variable if it's set; otherwise, NULL.  */
-const char *
+static const char *
 do_lookup_shell_variable(const char *name, size_t len, int value_idx)
 {
 	struct param_trie_node *node = &param_trie_root;
 	while (len--) {
 		int slot = trie_get_slot(*name++);
-		mysh_assert(slot < (int)ARRAY_SIZE(node->children));
 		if (slot < 0)
 			return NULL;
+		mysh_assert(slot < ARRAY_SIZE(node->children));
 		node = node->children[slot];
 		if (!node)
 			return NULL;
