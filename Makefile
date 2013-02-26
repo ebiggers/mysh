@@ -13,8 +13,8 @@ READLINE_CPPFLAGS :=
 READLINE_LDLIBS :=
 endif
 
-# CFLAGS  := -O0 -Wall -g -pipe
-CFLAGS  := -O2 -Wall -DNDEBUG -pipe
+CFLAGS  := -O0 -Wall -g -pipe
+#CFLAGS  := -O2 -Wall -DNDEBUG -pipe
 CPPFLAGS := $(READLINE_CPPFLAGS)
 
 OBJ     := mysh_builtin.o mysh_lex.o mysh_main.o \

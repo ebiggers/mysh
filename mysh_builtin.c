@@ -42,6 +42,22 @@ static int builtin_dummy(unsigned argc, const char **argv)
 	return 0;
 }
 
+static int do_alias(const char *alias)
+{
+	const char *equals = strchr(alias, '=');
+	if (equals)
+		insert_alias_len(alias, equals - alias, equals + 1);
+	return 0;
+}
+
+static int builtin_alias(unsigned argc, const char **argv)
+{
+	int ret = 0;
+	while (argc--)
+		ret |= do_alias(*argv++);
+	return ret;
+}
+
 /* Replace the shell process */
 static int builtin_exec(unsigned argc, const char **argv)
 {
@@ -318,6 +334,7 @@ static int builtin_help(unsigned argc, const char **argv);
 static const struct builtin builtins[] = {
 	{".",      builtin_source, ". filename [arguments ...]"},
 	{":",      builtin_dummy,  ":"},
+	{"alias",  builtin_alias,  "alias name=value..."},
 	{"cd",     builtin_cd,     "cd [DIR]"},
 	{"eval",   builtin_eval,   "eval [arg ...]"},
 	{"exec",   builtin_exec,   "exec [command [arguments ...]]"},

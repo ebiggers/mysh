@@ -60,7 +60,9 @@ const unsigned char _shell_char_tab[256] = {
  *
  * @param_char_map:  A map from character position to booleans
  *                   that indicate whether the character was produced by
- *                   parameter expansion (1) or not (0).
+ *                   parameter expansion (1) or not (0).  NULL indicates that
+ *                   all characters were produced by parameter or alias
+ *                   expansion.
  *
  * Returns %true if the string has trailing whitespace that was produced by
  * parameter expansion; %false otherwise.
@@ -80,7 +82,9 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 	for (;;) {
 		/* skip leading whitespace produced by parameter expansion  */
 		size_t j = i;
-		while (isspace(chars[i]) && param_char_map[i] != 0) {
+		while (isspace(chars[i]) &&
+		       (!param_char_map || param_char_map[i] != 0))
+		{
 			if (i == 0)
 				leading_whitespace = true;
 			i++;
@@ -101,8 +105,11 @@ split_string_around_whitespace(struct string *s, struct list_head *out_list,
 
 		/* skip non-whitespace and whitespace not produced by parameter
 		 * expansion */
-		while (chars[i] != '\0' && (!isspace(chars[i]) || !param_char_map[i]))
+		while (chars[i] != '\0' &&
+		       (!isspace(chars[i]) || (param_char_map && !param_char_map[i])))
+		{
 			i++;
+		}
 
 		if (j == 0 && i == s->len) {
 			/* Add entire string and return. */
@@ -230,6 +237,7 @@ static int expand_params_and_word_split(struct token *tok,
 	BUILD_BUG_ON((int)TOK_UNQUOTED_STRING != (int)STRING_FLAG_UNQUOTED);
 	BUILD_BUG_ON((int)TOK_DOUBLE_QUOTED_STRING != (int)STRING_FLAG_DOUBLE_QUOTED);
 	BUILD_BUG_ON((int)TOK_SINGLE_QUOTED_STRING != (int)STRING_FLAG_SINGLE_QUOTED);
+	BUILD_BUG_ON((int)TOK_FLAG_EXPANDED_ALIAS != (int)STRING_FLAG_EXPANDED_ALIAS);
 	s->flags = (int)tok->type;
 	if (tok->preceded_by_whitespace)
 		s->flags |= STRING_FLAG_PRECEDING_WHITESPACE;
@@ -241,8 +249,8 @@ static int expand_params_and_word_split(struct token *tok,
 
 	/* Do word splitting on unquoted strings that had parameter expansion
 	 * performed */
-	if ((s->flags & (STRING_FLAG_UNQUOTED | STRING_FLAG_PARAM_EXPANDED)) ==
-		        (STRING_FLAG_UNQUOTED | STRING_FLAG_PARAM_EXPANDED))
+	if ((s->flags & STRING_FLAG_UNQUOTED
+	     && s->flags & (STRING_FLAG_PARAM_EXPANDED | STRING_FLAG_EXPANDED_ALIAS)))
 	{
 		bool trailing_whitespace;
 
@@ -811,6 +819,20 @@ static int parse_redirections(struct list_head *toks,
 
 }
 
+static void expand_alias(struct token *tok)
+{
+	const char *alias_value;
+
+	if (tok->type & TOK_UNQUOTED_STRING) {
+		alias_value = lookup_alias(tok->tok_data);
+		if (alias_value) {
+			free(tok->tok_data);
+			tok->tok_data = xstrdup(alias_value);
+			tok->type |= TOK_FLAG_EXPANDED_ALIAS;
+		}
+	}
+}
+
 /* Given a list of tokens that make up a component of a pipeline, parse the
  * tokens into the command arguments, the variable assignments (if any), and the
  * redirections (if any).  In the process, do parameter expansion, word
@@ -830,6 +852,11 @@ int parse_tok_list(struct list_head *toks,
 	mysh_assert(list_empty(cmd_args));
 	mysh_assert(list_empty(redirs));
 	LIST_HEAD(string_list);
+
+	if (!list_empty(toks)) {
+		tok = list_entry(toks->next, struct token, list);
+		expand_alias(tok);
+	}
 	list_for_each_entry_safe(tok, tmp, toks, list) {
 		if (!(tok->type & TOK_CLASS_STRING))
 			break;

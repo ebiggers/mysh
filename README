@@ -201,7 +201,9 @@ Control statements such as 'if', 'for', and 'case' are not supported.
 Functions and aliases
 =====================
 
-Shell functions and aliases are not supported.
+Shell functions are not supported.  Aliases are partially supported (make them
+with the 'alias' builtin).  There are some limitations; for example, aliases are
+not expanded recursively.
 
 Command expansion
 =================

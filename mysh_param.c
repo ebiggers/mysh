@@ -16,11 +16,17 @@ unsigned int num_positional_parameters;
 
 #define NUM_SHELL_PARAM_VALID_CHARS 63
 
+enum {
+	PARAM_VALUE = 0,
+	ALIAS_VALUE,
+	NUM_VALUES
+};
+
 struct param_trie_node {
 	struct param_trie_node *children[NUM_SHELL_PARAM_VALID_CHARS];
 	struct param_trie_node *parent;
 	struct param_trie_node **parent_child_ptr;
-	char *value;
+	char *values[NUM_VALUES];
 	unsigned long num_children;
 };
 
@@ -65,6 +71,15 @@ static int trie_get_slot(char c)
 }
 
 
+static bool node_has_no_values(const struct param_trie_node *node)
+{
+	int i;
+	for (i = 0; i < NUM_VALUES; i++)
+		if (node->values[i])
+			return false;
+	return true;
+}
+
 /* Set or unset a shell variable.
  *
  * @node:  Root of the trie of shell variables.
@@ -72,8 +87,9 @@ static int trie_get_slot(char c)
  * @len:   Length of the name of the variable to insert.
  * @value: null-terminated value of the variable, or NULL to unset the variable.
  */
-static void insert_param(struct param_trie_node *node,
-			 const char *name, size_t len, char *value)
+static void insert_variable(struct param_trie_node *node,
+			    const char *name, size_t len, char *value,
+			    int value_idx)
 {
 	while (len--) {
 		int slot = trie_get_slot(*name++);
@@ -87,12 +103,12 @@ static void insert_param(struct param_trie_node *node,
 		}
 		node = node->children[slot];
 	}
-	free(node->value);
-	node->value = value;
+	free(node->values[value_idx]);
+	node->values[value_idx] = value;
 
 	/* If we unset a parameter by inserting NULL, walk up the free and free
 	 * any nodes that aren't needed anymore. */
-	while (node->value == NULL && node->num_children == 0) {
+	while (node_has_no_values(node) && node->num_children == 0) {
 		struct param_trie_node **parent_child_ptr = node->parent_child_ptr;
 		struct param_trie_node *parent = node->parent;
 		if (parent) {
@@ -109,12 +125,17 @@ static void insert_param(struct param_trie_node *node,
 
 void insert_shell_param_len(const char *name, size_t len, const char *value)
 {
-	insert_param(&param_trie_root, name, len, xstrdup(value));
+	insert_variable(&param_trie_root, name, len, xstrdup(value), PARAM_VALUE);
 }
 
 void insert_shell_param(const char *name, const char *value)
 {
-	insert_param(&param_trie_root, name, strlen(name), xstrdup(value));
+	insert_shell_param_len(name, strlen(name), value);
+}
+
+void insert_alias_len(const char *name, size_t len, const char *value)
+{
+	insert_variable(&param_trie_root, name, len, xstrdup(value), ALIAS_VALUE);
 }
 
 void make_param_assignment(const char *assignment)
@@ -154,11 +175,14 @@ void init_param_map()
 
 static void free_param_trie(struct param_trie_node *node)
 {
-	size_t i;
+	size_t i, j;
 	for (i = 0; i < ARRAY_SIZE(node->children); i++) {
 		if (node->children[i]) {
 			free_param_trie(node->children[i]);
-			free(node->children[i]->value);
+
+
+			for (j = 0; j < NUM_VALUES; j++)
+				free(node->children[i]->values[j]);
 			free(node->children[i]);
 			node->children[i] = NULL;
 			mysh_assert(node->num_children > 0);
@@ -188,6 +212,22 @@ bool string_matches_param_assignment(const struct string *s)
 }
 
 
+const char *
+do_lookup_shell_variable(const char *name, size_t len, int value_idx)
+{
+	struct param_trie_node *node = &param_trie_root;
+	while (len--) {
+		int slot = trie_get_slot(*name++);
+		mysh_assert(slot < (int)ARRAY_SIZE(node->children));
+		if (slot < 0)
+			return NULL;
+		node = node->children[slot];
+		if (!node)
+			return NULL;
+	}
+	return node->values[value_idx];
+}
+
 /* Looks up a shell variable that is not a positional parameter or special
  * variable.  Note that this finds environmental variables as well, provided
  * that they have been inserted as shell variables with init_param_map().
@@ -199,21 +239,23 @@ bool string_matches_param_assignment(const struct string *s)
 const char *
 lookup_shell_param_len(const char *name, size_t len)
 {
-	struct param_trie_node *node = &param_trie_root;
-	while (len--) {
-		int slot = trie_get_slot(*name++);
-		mysh_assert(slot >= 0 && slot < ARRAY_SIZE(node->children));
-		node = node->children[slot];
-		if (!node)
-			return NULL;
-	}
-	return node->value;
+	return do_lookup_shell_variable(name, len, PARAM_VALUE);
 }
 
 const char *
 lookup_shell_param(const char *name)
 {
 	return lookup_shell_param_len(name, strlen(name));
+}
+
+const char *lookup_alias_len(const char *name, size_t len)
+{
+	return do_lookup_shell_variable(name, len, ALIAS_VALUE);
+}
+
+const char *lookup_alias(const char *name)
+{
+	return lookup_alias_len(name, strlen(name));
 }
 
 static char *get_all_positional_params()
@@ -311,7 +353,7 @@ static int node_print_variable(struct param_trie_node *node)
 		name[i] = trie_slot_to_char_tab[p->parent_child_ptr - p->parent->children];
 		p = p->parent;
 	} while (i-- != 0);
-	ret = printf("%s='%s'\n", name, node->value);
+	ret = printf("%s='%s'\n", name, node->values[PARAM_VALUE]);
 	if (ret >= 0)
 		ret = 0;
 	else
@@ -323,7 +365,7 @@ static int do_print_all_shell_variables(struct param_trie_node *node)
 {
 	size_t i;
 	int ret = 0;
-	if (node->value) {
+	if (node->values[PARAM_VALUE]) {
 		ret = node_print_variable(node);
 		if (ret)
 			goto out;

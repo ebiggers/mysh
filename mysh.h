@@ -17,11 +17,12 @@ enum token_type {
 	TOK_UNQUOTED_STRING        = 0x1,
 	TOK_DOUBLE_QUOTED_STRING   = 0x2,
 	TOK_SINGLE_QUOTED_STRING   = 0x4,
-	TOK_PIPE                   = 0x8,
-	TOK_GREATER_THAN           = 0x10,
-	TOK_LESS_THAN              = 0x20,
-	TOK_AMPERSAND              = 0x40,
-	TOK_END_OF_SHELL_STATEMENT = 0x80,
+	TOK_FLAG_EXPANDED_ALIAS    = 0x20,
+	TOK_GREATER_THAN           = 0x40,
+	TOK_LESS_THAN              = 0x80,
+	TOK_PIPE                   = 0x100,
+	TOK_AMPERSAND              = 0x200,
+	TOK_END_OF_SHELL_STATEMENT = 0x400,
 };
 
 enum lex_status {
@@ -66,6 +67,7 @@ enum string_flags {
 	STRING_FLAG_SINGLE_QUOTED           = 0x4,
 	STRING_FLAG_PARAM_EXPANDED          = 0x8,
 	STRING_FLAG_PRECEDING_WHITESPACE    = 0x10,
+	STRING_FLAG_EXPANDED_ALIAS          = 0x20,
 	STRING_FLAG_FILENAME_EXPANDED       = 0x40,
 	STRING_FLAG_WAS_PARAM               = 0x100,
 	STRING_FLAG_VAR_ASSIGNMENT          = 0x200,
@@ -114,10 +116,14 @@ extern void set_positional_params(int num_params, const char *param0,
 extern void init_param_map();
 extern const char *lookup_shell_param(const char *name);
 extern const char *lookup_shell_param_len(const char *name, size_t len);
+extern const char *lookup_alias_len(const char *name, size_t len);
+extern const char *lookup_alias(const char *name);
+
 extern void insert_shell_param(const char *name, const char *value);
 extern int export_variable(const char *name);
 extern void insert_shell_param_len(const char *name, size_t len,
 				   const char *value);
+extern void insert_alias_len(const char *name, size_t len, const char *value);
 extern void make_param_assignment(const char *assignment);
 extern bool string_matches_param_assignment(const struct string *s);
 extern void destroy_positional_params();
