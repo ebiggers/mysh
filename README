@@ -273,7 +273,22 @@ used.
 Command prompt
 ==============
 
-The command prompt is hardcoded as '$' and cannot be changed.
+The primary and secondary command prompts can be customized by setting the PS1
+and PS2 variables (PS3 and PS4 are not supported).  The prompt can be at most
+127 characters, and only a limited number of meta-sequences are supported:
+
+Meta-sequence     Meaning
+
+        \[        Ignored
+        \]        Ignored
+        \000      Literal character given in octal
+        \u        Current username
+        \h        Current hostname, excluding domain name
+        \s        Name of the shell
+        \v        Version of the shell
+        \w        Absolute path to current working directory
+        \W        Absolute path to current working directory
+        \$        '#' if effective user ID is 0; otherwise '$'
 
 Startup files
 =============

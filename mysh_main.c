@@ -4,6 +4,8 @@
  * main loop for the shell.
  */
 
+#define _GNU_SOURCE
+
 #include "mysh.h"
 #include "list.h"
 #include <errno.h>
@@ -601,6 +603,119 @@ int execute_full_shell_input(const char *input, size_t len)
 	return mysh_last_exit_status;
 }
 
+
+/* Get the shell prompt to print.
+ *
+ * @var:  Name of shell variable that holds the prompt (with meta-sequences).
+ * @def:  Default value of the prompt (with meta-sequences).
+ *
+ * Meta-sequences in the prompt string will be interpreted.
+ */
+static const char *do_get_prompt(const char *var, const char *def)
+{
+#define MAX_PROMPT_LEN 127
+	static char prompt[MAX_PROMPT_LEN + 1];
+	const char *psp;
+	size_t i;
+	const char *ps;
+
+	ps = lookup_shell_param(var);
+	if (!ps)
+		ps = def;
+	for (psp = ps, i = 0; *psp && i < MAX_PROMPT_LEN; psp++) {
+		const char *s;
+		if (*psp == '\\') {
+			switch (*++psp) {
+			case '[':
+			case ']':
+				/* Begin/end a sequence of non-printing
+				 * characters (ignored) */
+				break;
+			case '0' ... '9':
+				/* Literal character given in octal */
+				if (*(psp + 1) >= '0' && *(psp + 1) <= '9' &&
+				    *(psp + 2) >= '0' && *(psp + 2) <= '9')
+				{
+					int c = *(psp + 2) - '0'
+						+ 8 * (*(psp + 1) - '0')
+						+ 64 * (*(psp + 0) - '0');
+					prompt[i++] = c;
+					psp += 2;
+				}
+				break;
+			case 'h':
+				/* Hostname, excluding domain name */
+				{
+					char *dot;
+					prompt[i] = '\0';
+					gethostname(&prompt[i], MAX_PROMPT_LEN - i);
+					prompt[MAX_PROMPT_LEN] = '\0';
+					dot = strchrnul(&prompt[i], '.');
+					*dot = '\0';
+					i += dot - &prompt[i];
+				}
+				break;
+			case 's':
+				/* Name of the shell */
+				s = SHELL_NAME;
+				goto handle_string;
+			case 'u':
+				/* Current user name */
+				s = lookup_shell_param("USER");
+				if (!s)
+					s = "I have no name!";
+				goto handle_string;
+			case 'v':
+				/* Version of the shell */
+				s = SHELL_VERSION;
+				goto handle_string;
+			case 'w':
+			case 'W':
+				/* Absolute path to working directory
+				 * TODO: Relative path, replace $HOME with ~  */
+				s = lookup_shell_param("PWD");
+				goto handle_string;
+
+			handle_string:
+				if (s) {
+					/* Append a string to the command prompt */
+					size_t len = strlen(s);
+					if (i + len > MAX_PROMPT_LEN)
+						goto out;
+					strcpy(&prompt[i], s);
+					i += len;
+				}
+				break;
+			case '$':
+				/* '#' if root, otherwise '$' */
+				prompt[i++] = geteuid() ? '$' : '#';
+				break;
+			default:
+				/* unrecognized meta sequence */
+				prompt[i++] = *psp;
+				break;
+			}
+		} else {
+			/* not a meta sequence */
+			prompt[i++] = *psp;
+		}
+	}
+out:
+	prompt[i] = '\0';
+	return prompt;
+}
+
+static const char *get_prompt(const struct list_head *cur_tok_list)
+{
+	if (list_empty(cur_tok_list)) {
+		/* Beginning of shell statement */
+		return do_get_prompt("PS1", "\\s-\\v\\$ ");
+	} else {
+		/* Continue a shell statement */
+		return do_get_prompt("PS2", "> ");
+	}
+}
+
 #define DEFAULT_INPUT_BUFSIZE 4096
 
 /* Execute shell input from the file descriptor @in_fd until end-of-file.
@@ -652,17 +767,12 @@ int read_loop(int in_fd, bool interactive)
 		if (interactive) {
 		#ifdef WITH_READLINE
 			/* Interactive shell, linked with libreadline */
-			const char *prompt;
 			char *p;
 
 			/* Call readline() to get the next line of input,
 			 * allowing it to be interrupted. */
-			if (list_empty(&cur_tok_list))
-				prompt = "$ "; /* Beginning of shell statement */
-			else
-				prompt = "> "; /* Continue a shell statement */
 			set_up_sigint_handler();
-			p = readline(prompt);
+			p = readline(get_prompt(&cur_tok_list));
 			remove_sigint_handler();
 
 			if (sigint_occurred) {
@@ -705,8 +815,7 @@ int read_loop(int in_fd, bool interactive)
 			/* Print the prompt ourselves when not relying on
 			 * readline, then fall through to the code below that
 			 * checks the buffer size, then does a raw read(). */
-			putc('$', stdout);
-			putc(' ', stdout);
+			fputs(get_prompt(&cur_tok_list), stdout);
 			fflush(stdout);
 		#endif
 		}

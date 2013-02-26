@@ -20,6 +20,10 @@ SHARE="$HOME/smb/share/EBIGGERS"
 
 export PATH PAGER EDITOR LANG LIBVIRT_DEFAULT_URI SHARE
 
+# Set shell prompt:
+# [begin green] USER@HOSTNAME [end green][begin blue] WORKING_DIRECTORY $ [end blue]
+PS1='\[\033[01;32m\]\u@\h\[\033[01;34m\] \w \$\[\033[00m\] '
+
 # Set some alias for listing files
 # Note: recursively expanding aliases is not supported; so, for example,
 # '--color=auto' needs to be specified for each alias below, rather than just

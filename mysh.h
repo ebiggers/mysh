@@ -6,6 +6,9 @@
 #include <assert.h>
 #include "list.h"
 
+#define SHELL_NAME "mysh"
+#define SHELL_VERSION "0.1"
+
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 #define ZERO_ARRAY(A) memset(A, 0, sizeof(A))
 
