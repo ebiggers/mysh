@@ -259,7 +259,10 @@ command.  ('echo' works only because it hasn't been implemented as a builtin).
 Command line editing
 ====================
 
-Readline is supported for interactive use.
+Readline is supported for interactive use.  Support for this is included if the
+readline headers are found in /usr/include/readline.  There are no
+shell-specific completions installed; only the default filename completion is
+used.
 
 Command prompt
 ==============
@@ -281,6 +284,14 @@ if the system ran out of memory, -1 if there was a parse error, or 2 if the
 shell could not understand its command line options, or 0 if the input to the
 shell was empty or consisted only of whitespace and comments.
 
+Signals
+=======
+
+SIGINT (send with Ctrl-C) is passed on to child processes running in the
+foreground, if any; it will otherwise discard the current line of input.
+
+SIGSTOP (Ctrl-Z) is not implemented.
+
 Implementation details
 ======================
 
@@ -299,8 +310,8 @@ length, and a shell statement need not correspond to one line of input--- so
 there's little reason to insist on always reading one line at a time.  (Note:
 this doesn't really make any difference if the shell is used interactively.)
 
-New builtin commands can easily be added by implementing the builtin function
-and adding an entry to the table in mysh_builtin.c.
+New builtin commands can be added fairly easily by implementing the builtin
+function and adding an entry to the 'builtins' table in mysh_builtin.c.
 
 Lists are used in lots of places in the code.  I borrowed the header from the
 Linux kernel for this, since I think it's a good way to do lists in C.

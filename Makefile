@@ -2,7 +2,7 @@
 WITH_READLINE := $(shell if [ -e /usr/include/readline ]; \
 				then echo yes; \
 			 else \
-			 	echo no; \
+				 echo no; \
 			 fi )
 
 ifeq ($(WITH_READLINE),yes)
