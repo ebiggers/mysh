@@ -130,6 +130,7 @@ extern int export_variable(const char *name);
 extern void make_param_assignment(const char *assignment);
 extern bool string_matches_param_assignment(const struct string *s);
 extern int print_all_shell_variables();
+extern int print_all_shell_aliases();
 
 extern void set_positional_params(int num_params, const char *param0,
 				  const char * const *params);

@@ -55,9 +55,15 @@ static int do_alias(const char *alias)
 
 static int builtin_alias(unsigned argc, const char **argv)
 {
-	int ret = 0;
-	while (argc--)
-		ret |= do_alias(*argv++);
+	int ret;
+	if (argc == 0) {
+		ret = print_all_shell_aliases();
+	} else {
+		ret = 0;
+		do {
+			ret |= do_alias(*argv++);
+		} while (--argc);
+	}
 	return ret;
 }
 

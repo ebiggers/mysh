@@ -316,7 +316,7 @@ static int glue_strings(struct list_head *string_list)
 			else
 				list_move_tail(&s->list, &glue_list);
 		}
-		/* Detect variable assignments 
+		/* Detect variable assignments
 		 * TODO: Somehow make it so that unquoted strings where
 		 * parameter expansion has occurred on the left side of the
 		 * equals sign are not considered variable assignments. */
@@ -736,7 +736,7 @@ out_syntax_error:
  *
  * @cmd_args:   List of strings of command arguments.  This is only needed so
  *              that the last one can be removed if it's actually part of a
- *              redirection like 1>&2. 
+ *              redirection like 1>&2.
  *
  * @redirs:     Empty list to which the redirections will be appended.
  *

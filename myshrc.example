@@ -6,17 +6,17 @@
 # Set up LS_COLORS to get good colored output from 'ls'.
 # The below commands are equivalent to eval `dircolors -b`
 # (command substitution is not supported)
-dircolors -b > /tmp/dircolors.b
-. /tmp/dircolors.b
-unlink /tmp/dircolors.b
+dircolors -b > /tmp/dircolors.b.$$
+. /tmp/dircolors.b.$$
+unlink /tmp/dircolors.b.$$
 
 # Set some more environmental variables
 PATH="/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin:$HOME/bin:$HOME/bin/virt:$PATH"
-PAGER=/usr/bin/less
-EDITOR=/usr/bin/vim
-LANG=en_US.UTF-8
+PAGER="/usr/bin/less"
+EDITOR="/usr/bin/vim"
+LANG="en_US.UTF-8"
 LIBVIRT_DEFAULT_URI="qemu:///system"
-SHARE=$HOME/smb/share/EBIGGERS
+SHARE="$HOME/smb/share/EBIGGERS"
 
 export PATH PAGER EDITOR LANG LIBVIRT_DEFAULT_URI SHARE
 

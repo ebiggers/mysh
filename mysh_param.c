@@ -356,7 +356,8 @@ lookup_param(const char *name, size_t len)
 	return NULL;
 }
 
-static int node_print_variable(struct param_trie_node *node)
+static int node_print_variable(struct param_trie_node *node,
+			       int value_idx, const char *format)
 {
 	size_t len;
 	size_t i;
@@ -378,26 +379,30 @@ static int node_print_variable(struct param_trie_node *node)
 		name[i] = trie_slot_to_char_tab[p->parent_child_ptr - p->parent->children];
 		p = p->parent;
 	} while (i-- != 0);
-	ret = printf("%s='%s'\n", name, node->values[PARAM_VALUE]);
+
+	ret = printf(format, name, node->values[value_idx]);
 	if (ret >= 0)
 		ret = 0;
 	else
-		mysh_error_with_errno("set: write error");
+		mysh_error_with_errno("write error");
 	return ret;
 }
 
-static int do_print_all_shell_variables(struct param_trie_node *node)
+static int do_print_all_shell_variables(struct param_trie_node *node,
+					int value_idx, const char *format)
 {
 	size_t i;
 	int ret = 0;
-	if (node->values[PARAM_VALUE]) {
-		ret = node_print_variable(node);
+
+	if (node->values[value_idx]) {
+		ret = node_print_variable(node, value_idx, format);
 		if (ret)
 			goto out;
 	}
 	for (i = 0; i < ARRAY_SIZE(node->children); i++) {
 		if (node->children[i]) {
-			ret = do_print_all_shell_variables(node->children[i]);
+			ret = do_print_all_shell_variables(node->children[i],
+							   value_idx, format);
 			if (ret)
 				goto out;
 		}
@@ -408,7 +413,14 @@ out:
 
 int print_all_shell_variables()
 {
-	return do_print_all_shell_variables(&param_trie_root);
+	return do_print_all_shell_variables(&param_trie_root,
+					    PARAM_VALUE, "%s='%s'\n");
+}
+
+int print_all_shell_aliases()
+{
+	return do_print_all_shell_variables(&param_trie_root,
+					    ALIAS_VALUE, "alias %s='%s'\n");
 }
 
 static void
