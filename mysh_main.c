@@ -640,11 +640,11 @@ static const char *do_get_prompt(const char *var, const char *def)
 			switch (*++psp) {
 			case '[':
 				/* Begin a sequence of non-printing characters.
-				 * This is stop readline() from getting confused
-				 * when the prompt contains terminal contral
-				 * sequences that expand to fewer on-screen
-				 * characters than the length of the prompt
-				 * string. */
+				 * This is to stop readline() from getting
+				 * confused when the prompt contains terminal
+				 * control sequences that expand to fewer
+				 * on-screen characters than the length of the
+				 * prompt string. */
 			#ifdef WITH_READLINE
 				prompt[i++] = RL_PROMPT_START_IGNORE;
 			#endif
@@ -761,7 +761,7 @@ static const char *get_prompt(const struct list_head *cur_tok_list)
  *
  * The code also is careful not to place any arbitrary limits on the length of
  * the input and to allow a shell statement to span multiple lines in the
- * interactive and interactive modes.
+ * non-interactive and interactive modes.
  */
 int read_loop(int in_fd, bool interactive)
 {
@@ -981,7 +981,7 @@ int do_source(const char *filename, unsigned nargs, const char * const *args)
 	pos_params_save = positional_parameters;
 	num_pos_params_save = num_positional_parameters;
 	positional_parameters = NULL;
-	set_positional_params(nargs, filename, (const char **)args);
+	set_positional_params(nargs, filename, args);
 	ret = read_loop(in_fd, false);
 	destroy_positional_params();
 	positional_parameters = pos_params_save;
@@ -1031,7 +1031,7 @@ int main(int argc, char **argv)
 		case 'c':
 			/* execute string provided on the command line */
 			set_positional_params(argc - optind, argv[optind - 1],
-					      (const char **)&argv[optind]);
+					      (const char * const *)&argv[optind]);
 			execute_full_shell_input(optarg, strlen(optarg));
 			goto out;
 		case 's':
@@ -1060,9 +1060,9 @@ int main(int argc, char **argv)
 			mysh_last_exit_status = -1;
 			goto out;
 		}
-		set_positional_params(argc - 1, argv[0], (const char **)(argv + 1));
+		set_positional_params(argc - 1, argv[0], (const char * const *)(argv + 1));
 	} else {
-		set_positional_params(argc, argv[-1], (const char **)argv);
+		set_positional_params(argc, argv[-1], (const char * const *)argv);
 		in_fd = STDIN_FILENO;
 	}
 	if (isatty(in_fd))
