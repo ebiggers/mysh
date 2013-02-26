@@ -288,7 +288,7 @@ static void free_redir_list(struct list_head *redir_list)
 }
 
 /* Executes a pipeline.  This includes a trivial pipeline consisting of only 1
- * comment.
+ * command.
  *
  * @command_tokens:  An array that gives the lists of tokens for each command in
  *                   the pipeline.
