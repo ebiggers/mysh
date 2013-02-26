@@ -82,6 +82,18 @@ static void sigint_handler(int sig)
 #endif
 }
 
+#ifdef WITH_READLINE
+static int mysh_getc(FILE *in)
+{
+	int c;
+	errno = 0;
+	/* Ignore interrupts other than sigint */
+	while ((c = getc(in)) == EOF && errno == EINTR && !sigint_occurred)
+		;
+	return c;
+}
+#endif
+
 static void onetime_sigint_handler(int sig);
 
 static void install_handler(int sig, void (*handler)(int))
@@ -627,9 +639,21 @@ static const char *do_get_prompt(const char *var, const char *def)
 		if (*psp == '\\') {
 			switch (*++psp) {
 			case '[':
+				/* Begin a sequence of non-printing characters.
+				 * This is stop readline() from getting confused
+				 * when the prompt contains terminal contral
+				 * sequences that expand to fewer on-screen
+				 * characters than the length of the prompt
+				 * string. */
+			#ifdef WITH_READLINE
+				prompt[i++] = RL_PROMPT_START_IGNORE;
+			#endif
+				break;
 			case ']':
-				/* Begin/end a sequence of non-printing
-				 * characters (ignored) */
+				/* End a sequence of non-printing characters */
+			#ifdef WITH_READLINE
+				prompt[i++] = RL_PROMPT_END_IGNORE;
+			#endif
 				break;
 			case '0' ... '9':
 				/* Literal character given in octal */
@@ -998,7 +1022,7 @@ int main(int argc, char **argv)
 	 * the shell, which then does a longjmp() back to the main loop.  I
 	 * didn't do it this way because using longjmp() correctly is very
 	 * tricky. */
-	rl_getc_function = getc;
+	rl_getc_function = mysh_getc;
 	rl_catch_signals = 0;
 #endif
 

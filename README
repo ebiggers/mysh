@@ -279,16 +279,16 @@ and PS2 variables (PS3 and PS4 are not supported).  The prompt can be at most
 
 Meta-sequence     Meaning
 
-        \[        Ignored
-        \]        Ignored
-        \000      Literal character given in octal
         \u        Current username
         \h        Current hostname, excluding domain name
-        \s        Name of the shell
-        \v        Version of the shell
         \w        Absolute path to current working directory
         \W        Absolute path to current working directory
+        \s        Name of the shell
+        \v        Version of the shell
         \$        '#' if effective user ID is 0; otherwise '$'
+        \[        Begin a sequence of non-printing characters
+        \]        End a sequence of non-printing characters
+        \000      Literal character given in octal
 
 Startup files
 =============
