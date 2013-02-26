@@ -395,9 +395,16 @@ static int execute_pipeline(struct list_head command_tokens[],
 			goto out_close_pipes;
 		} else if (ret == 0) {
 			if (async) {
+				/* Background processes are executed with a new
+				 * session ID and with standard input redirected
+				 * from /dev/null. */
+				int fd;
+
 				errno = 0;
 				setsid();
-				dup2(open("/dev/null", O_RDONLY), STDIN_FILENO);
+				fd = open("/dev/null", O_RDONLY);
+				dup2(fd, STDIN_FILENO);
+				close(fd);
 				if (errno) {
 					mysh_error_with_errno("problem daemonizing "
 							      "background process");
