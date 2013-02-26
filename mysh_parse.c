@@ -649,7 +649,7 @@ static int parse_next_redirection(struct list_head *toks,
 				goto out_syntax_error;
 			if (tok3->type & TOK_LESS_THAN && !tok3->preceded_by_whitespace) {
 				tok4 = next_token(toks);
-				if (tok4->type & TOK_CLASS_STRING) {
+				if (tok4 && tok4->type & TOK_CLASS_STRING) {
 					/* <<<WORD (here string) */
 					mysh_error("here strings not implemented");
 					goto out_error;
